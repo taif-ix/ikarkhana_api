@@ -26,6 +26,21 @@ body {
   margin: 0 auto;
 }
 
+.workspace.upload-only {
+  min-height: calc(100vh - 48px);
+  grid-template-columns: minmax(280px, 460px);
+  align-content: center;
+  justify-content: center;
+}
+
+.workspace.upload-only .upload-panel {
+  position: static;
+}
+
+.workspace.document-loaded {
+  grid-template-columns: minmax(560px, 1fr) 450px;
+}
+
 .panel {
   background: #ffffff;
   border: 1px solid #d9dee3;
@@ -39,6 +54,10 @@ body {
   align-self: start;
   position: sticky;
   top: 24px;
+}
+
+[hidden] {
+  display: none !important;
 }
 
 .eyebrow {
@@ -228,13 +247,15 @@ label {
   color: #4b5563;
 }
 
-input {
+input,
+select {
   width: 100%;
   border: 1px solid #cfd6dd;
   border-radius: 6px;
   padding: 10px;
   color: #1e252b;
   font: inherit;
+  background: #ffffff;
 }
 
 .segmented {

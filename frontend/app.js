@@ -1,6 +1,10 @@
 const API_BASE = "http://127.0.0.1:8010";
 
 const diagramInput = document.querySelector("#diagram");
+const workspace = document.querySelector("#workspace");
+const uploadPanel = document.querySelector("#uploadPanel");
+const formPanel = document.querySelector("#formPanel");
+const resultPanel = document.querySelector("#resultPanel");
 const fileMeta = document.querySelector("#fileMeta");
 const preview = document.querySelector("#preview");
 const form = document.querySelector("#estimateForm");
@@ -8,13 +12,12 @@ const result = document.querySelector("#result");
 const statusBadge = document.querySelector("#status");
 const submitButton = form.querySelector("button[type='submit']");
 const extractButton = document.querySelector("#extractButton");
+const changeFileButton = document.querySelector("#changeFileButton");
 const prevFieldButton = document.querySelector("#prevField");
 const nextFieldButton = document.querySelector("#nextField");
 const fieldFocus = document.querySelector("#fieldFocus");
-const requiredEstimateFields = [
-  "square_tube_length_mm",
-  "square_tube_outer_mm",
-  "square_tube_thickness_mm",
+const baseRequiredEstimateFields = [
+  "main_profile_length_mm",
   "bottom_plate_l_mm",
   "bottom_plate_w_mm",
   "bottom_plate_t_mm",
@@ -34,6 +37,14 @@ const requiredEstimateFields = [
 ];
 const dimensionFields = [
   ["part_name", "Part name"],
+  ["main_material_form", "Material form"],
+  ["main_profile_shape", "Main profile shape"],
+  ["main_profile_is_hollow", "Section type"],
+  ["main_profile_length_mm", "Main profile length"],
+  ["main_profile_outer_a_mm", "Main profile outer A"],
+  ["main_profile_outer_b_mm", "Main profile outer B"],
+  ["main_profile_diameter_mm", "Main profile diameter"],
+  ["main_profile_thickness_mm", "Main profile thickness"],
   ["square_tube_length_mm", "Square tube length"],
   ["square_tube_outer_mm", "Square tube outer"],
   ["square_tube_thickness_mm", "Square tube thickness"],
@@ -66,16 +77,26 @@ let formulaLookup = {};
 diagramInput.addEventListener("change", async () => {
   const file = diagramInput.files?.[0];
   if (!file) {
+    setDocumentWorkspaceVisible(false);
     fileMeta.textContent = "No file selected";
     preview.innerHTML = "";
     clearExtractedFields();
     return;
   }
 
+  setDocumentWorkspaceVisible(true);
   clearExtractedFields();
   fileMeta.textContent = `${file.name} - ${(file.size / 1024).toFixed(1)} KB`;
   await renderDiagramPreview(file);
 });
+
+function setDocumentWorkspaceVisible(isVisible) {
+  workspace.classList.toggle("upload-only", !isVisible);
+  workspace.classList.toggle("document-loaded", isVisible);
+  uploadPanel.hidden = isVisible;
+  formPanel.hidden = !isVisible;
+  resultPanel.hidden = !isVisible;
+}
 
 extractButton.addEventListener("click", async () => {
   const file = diagramInput.files?.[0];
@@ -105,6 +126,7 @@ extractButton.addEventListener("click", async () => {
 
     fillForm(payload);
     applyOptionalDefaults();
+    syncProfileFallbacks();
     updateFieldFocus(0);
     statusBadge.textContent = "Extracted";
     result.innerHTML = `
@@ -132,6 +154,10 @@ nextFieldButton.addEventListener("click", () => {
   updateFieldFocus(focusedFieldIndex + 1);
 });
 
+changeFileButton.addEventListener("click", () => {
+  diagramInput.click();
+});
+
 result.addEventListener("click", (event) => {
   const button = event.target.closest(".formula-value");
   if (!button) {
@@ -149,7 +175,8 @@ form.addEventListener("submit", async (event) => {
     return;
   }
   applyOptionalDefaults();
-  const missingFields = requiredEstimateFields.filter((name) => !form.elements[name]?.value);
+  syncProfileFallbacks();
+  const missingFields = getRequiredEstimateFields().filter((name) => !form.elements[name]?.value);
   if (missingFields.length) {
     statusBadge.textContent = "Extract first";
     const missingLabels = missingFields.map((name) => getFieldLabel(name)).join(", ");
@@ -157,8 +184,7 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
-  const data = new FormData(form);
-  data.append("diagram", file);
+  const data = buildEstimateFormData(file);
 
   submitButton.disabled = true;
   statusBadge.textContent = "Calculating";
@@ -171,7 +197,7 @@ form.addEventListener("submit", async (event) => {
 
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.detail || `API returned ${response.status}`);
+      throw new Error(formatApiError(payload.detail) || `API returned ${response.status}`);
     }
 
     const estimate = await response.json();
@@ -187,6 +213,36 @@ form.addEventListener("submit", async (event) => {
 
 function money(value) {
   return `Rs ${Number(value).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
+}
+
+function buildEstimateFormData(file) {
+  const data = new FormData();
+  Array.from(form.elements).forEach((element) => {
+    if (!element.name || element.disabled) {
+      return;
+    }
+    if ((element.type === "checkbox" || element.type === "radio") && !element.checked) {
+      return;
+    }
+    if (element.value === "") {
+      return;
+    }
+    data.append(element.name, element.value);
+  });
+  data.append("diagram", file);
+  return data;
+}
+
+function formatApiError(detail) {
+  if (!Array.isArray(detail)) {
+    return detail;
+  }
+  return detail
+    .map((item) => {
+      const field = Array.isArray(item.loc) ? item.loc[item.loc.length - 1] : "field";
+      return `${getFieldLabel(field)}: ${item.msg}`;
+    })
+    .join("; ");
 }
 
 function escapeHtml(value) {
@@ -270,6 +326,62 @@ function applyOptionalDefaults() {
       input.value = value;
     }
   });
+}
+
+function syncProfileFallbacks() {
+  const profileLength = form.elements.main_profile_length_mm;
+  const profileOuterA = form.elements.main_profile_outer_a_mm;
+  const profileOuterB = form.elements.main_profile_outer_b_mm;
+  const profileDiameter = form.elements.main_profile_diameter_mm;
+  const profileThickness = form.elements.main_profile_thickness_mm;
+  const materialForm = form.elements.main_material_form;
+  const profileShape = form.elements.main_profile_shape;
+  const profileIsHollow = form.elements.main_profile_is_hollow;
+  const squareLength = form.elements.square_tube_length_mm;
+  const squareOuter = form.elements.square_tube_outer_mm;
+  const squareThickness = form.elements.square_tube_thickness_mm;
+
+  if (materialForm && !materialForm.value && (squareLength?.value || profileLength?.value)) materialForm.value = "rod_profile";
+  if (profileShape && !profileShape.value) {
+    if (profileDiameter?.value && !profileOuterA?.value) {
+      profileShape.value = "circular";
+    } else if (profileOuterA?.value && profileOuterB?.value && profileOuterA.value !== profileOuterB.value) {
+      profileShape.value = "rectangular";
+    } else if (squareOuter?.value || profileOuterA?.value) {
+      profileShape.value = "square";
+    }
+  }
+  if (profileIsHollow && !profileIsHollow.value && (squareThickness?.value || profileThickness?.value)) profileIsHollow.value = "true";
+
+  if (profileLength && !profileLength.value && squareLength?.value) profileLength.value = squareLength.value;
+  if (profileOuterA && !profileOuterA.value && squareOuter?.value) profileOuterA.value = squareOuter.value;
+  if (profileOuterB && !profileOuterB.value && squareOuter?.value) profileOuterB.value = squareOuter.value;
+  if (profileDiameter && !profileDiameter.value && squareOuter?.value) profileDiameter.value = squareOuter.value;
+  if (profileThickness && !profileThickness.value && squareThickness?.value) profileThickness.value = squareThickness.value;
+
+  if (squareLength && !squareLength.value && profileLength?.value) squareLength.value = profileLength.value;
+  if (squareOuter && !squareOuter.value && profileOuterA?.value) squareOuter.value = profileOuterA.value;
+  if (squareThickness && !squareThickness.value && profileThickness?.value) squareThickness.value = profileThickness.value;
+}
+
+function getRequiredEstimateFields() {
+  const shape = String(form.elements.main_profile_shape?.value || "square").toLowerCase();
+  const isHollow = String(form.elements.main_profile_is_hollow?.value ?? "true") === "true";
+  const profileFields = ["main_material_form", "main_profile_shape", "main_profile_is_hollow", "main_profile_length_mm"];
+
+  if (shape === "circular") {
+    profileFields.push("main_profile_diameter_mm");
+  } else if (shape === "rectangular") {
+    profileFields.push("main_profile_outer_a_mm", "main_profile_outer_b_mm");
+  } else {
+    profileFields.push("main_profile_outer_a_mm");
+  }
+
+  if (isHollow) {
+    profileFields.push("main_profile_thickness_mm");
+  }
+
+  return [...profileFields, ...baseRequiredEstimateFields.filter((name) => !profileFields.includes(name))];
 }
 
 function clearExtractedFields() {
