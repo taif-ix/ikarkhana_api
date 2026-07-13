@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Diagram Cost Estimator POC</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="workspace">
+        <aside class="panel upload-panel">
+          <div>
+            <p class="eyebrow">POC</p>
+            <h1>Diagram Cost Estimator</h1>
+            <p class="subtle">Upload a drawing, adjust extracted dimensions, and calculate material, process, and surface treatment cost.</p>
+          </div>
+
+          <label class="drop-zone" for="diagram">
+            <input id="diagram" name="diagram" type="file" accept=".tif,.tiff,.png,.jpg,.jpeg,.pdf,.dwg" />
+            <span class="drop-icon">+</span>
+            <strong>Upload diagram</strong>
+            <small>TIF, PDF, DWG, PNG, JPG</small>
+          </label>
+
+          <div id="fileMeta" class="file-meta">No file selected</div>
+        </aside>
+
+        <section class="panel form-panel">
+          <form id="estimateForm">
+          <div class="section-heading">
+            <h2>Part Details</h2>
+              <div class="actions">
+                <button id="extractButton" type="button" class="secondary">Extract From Diagram</button>
+                <button type="submit">Calculate Cost</button>
+              </div>
+            </div>
+
+            <div class="grid two">
+              <label>Part name<input name="part_name" placeholder="Extracted from diagram" /></label>
+              <label>Material rate INR/kg<input name="material_rate_per_kg" type="number" step="0.01" value="255" /></label>
+            </div>
+
+            <h3>Square Tube</h3>
+            <div class="grid three">
+              <label>Length mm<input name="square_tube_length_mm" type="number" placeholder="Extract first" /></label>
+              <label>Outer mm<input name="square_tube_outer_mm" type="number" placeholder="Extract first" /></label>
+              <label>Thickness mm<input name="square_tube_thickness_mm" type="number" placeholder="Extract first" /></label>
+            </div>
+
+            <h3>Plates</h3>
+            <div class="grid three">
+              <label>Bottom L<input name="bottom_plate_l_mm" type="number" placeholder="Extract first" /></label>
+              <label>Bottom W<input name="bottom_plate_w_mm" type="number" placeholder="Extract first" /></label>
+              <label>Bottom T<input name="bottom_plate_t_mm" type="number" placeholder="Extract first" /></label>
+              <label>Top L<input name="top_plate_l_mm" type="number" placeholder="Extract first" /></label>
+              <label>Top W<input name="top_plate_w_mm" type="number" placeholder="Extract first" /></label>
+              <label>Top T<input name="top_plate_t_mm" type="number" placeholder="Extract first" /></label>
+            </div>
+
+            <h3>Handle & Screwing Pieces</h3>
+            <div class="grid four">
+              <label>Handle OD<input name="handle_od_mm" type="number" placeholder="Extract first" /></label>
+              <label>Handle thick<input name="handle_thickness_mm" type="number" placeholder="Extract first" /></label>
+              <label>Handle length<input name="handle_length_mm" type="number" placeholder="Extract first" /></label>
+              <label>Angle kg/m<input name="chair_angle_weight_per_m" type="number" step="0.01" placeholder="Extract first" /></label>
+              <label>Angle length<input name="chair_angle_length_mm" type="number" placeholder="Extract first" /></label>
+              <label>Screw dia<input name="screw_piece_dia_mm" type="number" placeholder="Extract first" /></label>
+              <label>Screw length<input name="screw_piece_length_mm" type="number" placeholder="Extract first" /></label>
+              <label>Screw qty<input name="screw_piece_qty" type="number" placeholder="Extract first" /></label>
+            </div>
+
+            <h3>Process</h3>
+            <div class="grid four">
+              <label>Total cut length mm<input name="cutting_length_mm" type="number" placeholder="Extract first" /></label>
+              <label>Cut rate INR/m<input name="cutting_rate_per_meter" type="number" step="0.01" value="30" /></label>
+              <label>Weld length mm<input name="weld_length_mm" type="number" placeholder="Extract first" /></label>
+              <label>Weld labor INR/m<input name="welding_labor_per_meter" type="number" step="0.01" value="400" /></label>
+              <label>Surface INR/m2<input name="surface_rate_per_m2" type="number" step="0.01" value="120" /></label>
+              <label>Bend count<input name="bend_count" type="number" placeholder="Extract first" /></label>
+              <label>Bend INR/stroke<input name="bend_rate_per_stroke" type="number" step="0.01" value="5" /></label>
+              <label>Press hits<input name="press_machine_hits" type="number" value="0" /></label>
+              <label>Press INR/hit<input name="press_machine_rate_per_hit" type="number" step="0.01" value="5" /></label>
+              <label>Tacking fixed INR<input name="tacking_labor_fixed" type="number" step="0.01" value="1040" /></label>
+            </div>
+
+            <div class="segmented">
+              <label><input type="radio" name="surface_type" value="satin_passivated" checked /> Satin/passivated</label>
+              <label><input type="radio" name="surface_type" value="painted" /> Painted</label>
+              <label><input type="radio" name="surface_type" value="none" /> None</label>
+              <label><input type="checkbox" name="include_tacking_labor" value="true" /> Include tacking</label>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel result-panel">
+          <div class="section-heading">
+            <h2>Diagram</h2>
+            <div class="field-nav">
+              <button id="prevField" type="button" class="icon-button" title="Previous dimension field">&#8592;</button>
+              <button id="nextField" type="button" class="icon-button" title="Next dimension field">&#8594;</button>
+            </div>
+          </div>
+          <div id="preview" class="preview large-preview">Upload a diagram to preview it here.</div>
+          <div id="fieldFocus" class="field-focus">Extract dimensions to review fields.</div>
+
+          <div class="section-heading">
+            <h2>Estimate</h2>
+            <span id="status">Waiting</span>
+          </div>
+          <div id="result" class="empty-state">Upload a diagram and calculate to see the cost breakdown.</div>
+        </section>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
