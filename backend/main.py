@@ -11,8 +11,7 @@ from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -40,7 +39,6 @@ ROD_SUPPLIER_LENGTH_MM = 6000.00
 SHEET_SUPPLIER_LENGTH_MM = 2500.00
 SHEET_SUPPLIER_WIDTH_MM = 1250.00
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-FRONTEND_ROOT = PROJECT_ROOT / "frontend"
 ALLOWED_GEMINI_MODELS = {
     "gemini-2.5-pro",
     "gemini-2.5-flash",
@@ -758,8 +756,20 @@ def health() -> dict[str, str]:
 
 
 @app.get("/")
-def index() -> FileResponse:
-    return FileResponse(FRONTEND_ROOT / "index.html")
+def api_root() -> dict[str, object]:
+    return {
+        "service": "cost_estimator_api",
+        "status": "ok",
+        "frontend_repo": "https://github.com/taif-ix/ikarkhana_web",
+        "docs": "/docs",
+        "endpoints": [
+            "/health",
+            "/gemini-config",
+            "/diagram-preview",
+            "/extract-dimensions",
+            "/estimate",
+        ],
+    }
 
 
 @app.get("/gemini-config", response_model=GeminiConfig)
@@ -1138,6 +1148,3 @@ async def estimate(
         ),
         calculation_steps=calculation_steps,
     )
-
-
-app.mount("/static", StaticFiles(directory=FRONTEND_ROOT), name="static")

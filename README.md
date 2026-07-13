@@ -1,8 +1,14 @@
-# Diagram Cost Estimator POC
+# Cost Estimator API
 
-Small proof of concept with a frontend and FastAPI backend.
+FastAPI backend for engineering diagram cost estimation.
 
-The user uploads a drawing file, extracts dimensions through the Gemini API, reviews editable dimensions and rates, then gets a costing breakdown for a pillar assembly style part.
+The frontend is maintained separately:
+
+```text
+https://github.com/taif-ix/ikarkhana_web
+```
+
+This backend repo should stay API-only. It no longer serves bundled HTML/CSS/JS.
 
 ## Run
 
@@ -13,15 +19,22 @@ pip install -r requirements.txt
 uvicorn backend.main:app --reload --port 8010
 ```
 
-Then open the frontend through FastAPI:
+Check the backend:
 
 ```text
-http://127.0.0.1:8010/
+http://127.0.0.1:8010/health
+```
+
+Run the frontend from the separate FE repo and configure it to call:
+
+```text
+http://127.0.0.1:8010
 ```
 
 ## API
 
 - `GET /health`
+- `GET /` API metadata
 - `GET /gemini-config`
 - `GET /vertex-config` compatibility alias
 - `POST /diagram-preview` multipart form with `diagram`
