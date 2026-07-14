@@ -18,12 +18,18 @@ from app.core.config import (
     SHEET_STOCK_WIDTH_MM,
 )
 from app.models.schemas import (
+    AssemblyLevelFabrication,
+    CalculatedCosts,
     CalculationStep,
+    CostedPartBreakdown,
     EstimateResponse,
     LineItem,
     MaterialSummary,
     ProcessBreakdown,
     StockSummary,
+    StructuredCostBreakdown,
+    StructuredExtraction,
+    WeightLedger,
 )
 from app.services.formulas import (
     find_step,
@@ -44,6 +50,175 @@ from app.services.formulas import (
     square_tube_weight,
     tube_surface_area_m2,
 )
+
+
+def _part_area_and_weight(
+    component_type: str,
+    tube_type: str,
+    length_mm: float,
+    width_or_dia_mm: float,
+    secondary_width_mm: float | None,
+    thickness_mm: float,
+    density: float,
+) -> tuple[float, float]:
+    component = component_type.lower()
+    tube = tube_type.lower()
+    if component == "tube" and ("round" in tube or "dia" in tube or "ø" in tube):
+        area = math.pi / 4 * (width_or_dia_mm**2 - max(width_or_dia_mm - (2 * thickness_mm), 0) ** 2)
+        weight = area * length_mm * density
+        surface = tube_surface_area_m2(math.pi * width_or_dia_mm, length_mm)
+        return surface, weight
+    if component == "tube":
+        outer_b = secondary_width_mm or width_or_dia_mm
+        inner_a = max(width_or_dia_mm - (2 * thickness_mm), 0)
+        inner_b = max(outer_b - (2 * thickness_mm), 0)
+        area = (width_or_dia_mm * outer_b) - (inner_a * inner_b)
+        weight = area * length_mm * density
+        surface = tube_surface_area_m2(2 * (width_or_dia_mm + outer_b), length_mm)
+        return surface, weight
+    if component in {"sheet", "plate"}:
+        width = width_or_dia_mm
+        weight = plate_weight(length_mm, width, thickness_mm, density)
+        surface = plate_surface_area_m2(length_mm, width, thickness_mm)
+        return surface, weight
+    if component in {"rod", "accessory"}:
+        radius = width_or_dia_mm / 2
+        weight = rod_weight(width_or_dia_mm, length_mm, density)
+        surface = ((2 * math.pi * radius * length_mm) + (2 * math.pi * radius * radius)) / 1_000_000
+        return surface, weight
+    weight = plate_weight(length_mm, width_or_dia_mm, thickness_mm, density)
+    surface = plate_surface_area_m2(length_mm, width_or_dia_mm, thickness_mm)
+    return surface, weight
+
+
+def _stock_for_part(component_type: str, net_weight: float, length_mm: float, width_mm: float, thickness_mm: float, density: float, qty: int) -> tuple[float, float, str]:
+    component = component_type.lower()
+    if component in {"tube", "rod", "accessory"}:
+        stock = rod_stock_summary(net_weight, length_mm, qty)
+    else:
+        stock = sheet_nesting_summary(length_mm, width_mm, thickness_mm, density, qty)
+    parts_per_stock = max(int(stock["parts_per_stock"]), 1)
+    gross_unit = float(stock["stock_weight_kg"]) / parts_per_stock
+    scrap_unit = max(gross_unit - net_weight, 0)
+    return gross_unit, scrap_unit, str(stock["approach"])
+
+
+def calculate_structured_cost_breakdown(
+    extraction: StructuredExtraction,
+    *,
+    material_rate_per_kg: float | None,
+    laser_cutting_rate_per_meter: float,
+    press_machine_rate_per_hit: float,
+    bend_rate_per_bend: float,
+    welding_labor_per_meter: float,
+    painting_rate_per_m2: float,
+    tacking_fixed_setup_cost: float,
+) -> StructuredCostBreakdown:
+    material_type = normalize_material_type(extraction.raw_material_type, extraction.raw_material_code)
+    default_details = MATERIALS[material_type]
+    default_density = float(default_details["density"])
+    default_rate = material_rate_per_kg if material_rate_per_kg and material_rate_per_kg > 0 else float(default_details["default_rate"])
+    costed_parts: list[CostedPartBreakdown] = []
+
+    for index, part in enumerate(extraction.per_part_breakdown, start=1):
+        dims = part.dimensions
+        length = float(dims.length_mm or 0)
+        width_or_dia = float(dims.width_or_outer_dia_mm or 0)
+        secondary_width = dims.secondary_width_mm
+        thickness = float(dims.thickness_or_wall_thickness_mm or 0)
+        qty = max(int(part.per_set_qty or 1), 1)
+        item_material_type = normalize_material_type(part.material_type or material_type, part.material_code or extraction.raw_material_code)
+        item_details = MATERIALS[item_material_type]
+        density = float(item_details["density"])
+        rate = default_rate if item_material_type == material_type else float(item_details["default_rate"])
+
+        surface_area, net_weight = _part_area_and_weight(part.component_type, part.tube_type, length, width_or_dia, secondary_width, thickness, density)
+        gross_weight, scrap_weight, stock_approach = _stock_for_part(part.component_type, net_weight, length, width_or_dia, thickness, density, qty)
+        laser_cutting_cost = (part.cutting_metrics.laser_cutting_length_mm / 1000) * laser_cutting_rate_per_meter
+        machine_punching_cost = part.cutting_metrics.press_machine_hits_count * press_machine_rate_per_hit
+        bending_cost = part.bends_per_part * bend_rate_per_bend
+        painting_cost = surface_area * painting_rate_per_m2
+        material_cost = gross_weight * rate
+        single_laser = material_cost + laser_cutting_cost + bending_cost + painting_cost
+        single_machine = material_cost + machine_punching_cost + bending_cost + painting_cost
+
+        steps = [
+            CalculationStep(
+                section="Weight",
+                name=f"Part {part.part_number} net weight",
+                formula="Net weight = calculated volume x material density",
+                substituted_values=f"geometry from {part.component_type}, density {density} kg/mm3",
+                result=kg(net_weight),
+            ),
+            CalculationStep(
+                section="Stock",
+                name=f"Part {part.part_number} gross RM weight",
+                formula="Gross unit RM weight = stock weight / parts per stock",
+                substituted_values=stock_approach,
+                result=kg(gross_weight),
+            ),
+            CalculationStep(
+                section="Cost",
+                name=f"Part {part.part_number} material cost",
+                formula="Material cost = gross RM weight x material rate",
+                substituted_values=f"{round(gross_weight, 3)} kg x {CURRENCY_UNIT} {rate}/kg",
+                result=money(material_cost),
+            ),
+        ]
+
+        part_payload = part.model_dump()
+        part_payload["part_number"] = part.part_number or str(index)
+        part_payload["nesting_layout_hint"] = part.nesting_layout_hint.model_copy(
+            update={
+                "nesting_strategy": part.nesting_layout_hint.nesting_strategy or stock_approach,
+            }
+        )
+        costed_parts.append(
+            CostedPartBreakdown(
+                **part_payload,
+                surface_area_sq_meter=round(surface_area, 4),
+                weight_ledger=WeightLedger(
+                    unit_gross_rm_weight_kg=round(gross_weight, 3),
+                    unit_net_finished_weight_kg=round(net_weight, 3),
+                    unit_scrap_waste_weight_kg=round(scrap_weight, 3),
+                    total_set_gross_weight_kg=round(gross_weight * qty, 3),
+                ),
+                calculated_costs=CalculatedCosts(
+                    material_cost=round_money(material_cost),
+                    laser_cutting_cost_estimate=round_money(laser_cutting_cost),
+                    machine_punching_cost_estimate=round_money(machine_punching_cost),
+                    bending_cost=round_money(bending_cost),
+                    painting_cost=round_money(painting_cost),
+                    total_single_part_cost_via_laser=round_money(single_laser),
+                    total_single_part_cost_via_machine=round_money(single_machine),
+                    total_combined_set_cost_via_laser=round_money(single_laser * qty),
+                    total_combined_set_cost_via_machine=round_money(single_machine * qty),
+                ),
+                calculation_steps=steps,
+            )
+        )
+
+    welding_length = extraction.assembly_level_fabrication.total_assembly_welding_length_mm
+    welding_cost = (welding_length / 1000) * welding_labor_per_meter
+    parts_laser = sum(part.calculated_costs.total_combined_set_cost_via_laser for part in costed_parts)
+    parts_machine = sum(part.calculated_costs.total_combined_set_cost_via_machine for part in costed_parts)
+    return StructuredCostBreakdown(
+        currency=extraction.currency or "INR",
+        part_name=extraction.part_name,
+        per_part_breakdown=costed_parts,
+        assembly_level_fabrication=AssemblyLevelFabrication(
+            total_assembly_welding_length_mm=round(welding_length, 2),
+            welding_labor_cost=round_money(welding_cost),
+            tacking_fixed_setup_cost=round_money(tacking_fixed_setup_cost),
+            grand_total_assembly_cost_via_laser=round_money(parts_laser + welding_cost + tacking_fixed_setup_cost),
+            grand_total_assembly_cost_via_machine=round_money(parts_machine + welding_cost + tacking_fixed_setup_cost),
+        ),
+        assumptions=[
+            "Gemini extracts part list, dimensions, visible operations, and welding hints; backend calculates weights/costs.",
+            "Rod/profile stock uses 6000 mm. Sheet stock uses 2500 x 1250 mm rectangular nesting.",
+            "If a drawing does not show a feature clearly, extracted values may be zero/null and should be reviewed.",
+        ],
+    )
 
 
 def calculate_estimate(

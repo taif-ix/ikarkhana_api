@@ -9,7 +9,7 @@ import re
 from fastapi import HTTPException
 
 from app.core.config import ALLOWED_GEMINI_MODELS
-from app.models.schemas import ExtractedDimensions
+from app.models.schemas import ExtractedDimensions, StructuredExtraction
 
 
 EXTRACTION_PROMPT = """
@@ -62,6 +62,67 @@ Cutting dimension rule:
 For cutting_length_mm, estimate from visible tube/profile lengths plus plate perimeters and circular/rectangular cuts.
 For weld_length_mm, estimate from visible weld symbols and joint perimeters.
 Do not invent hidden detail drawing dimensions.
+"""
+
+STRUCTURED_EXTRACTION_PROMPT = """
+You are extracting a manufacturing costing part list from an engineering drawing.
+Return only a compact valid JSON object. Do not use markdown. Do not add comments.
+Use double quotes for all keys and valid JSON arrays/objects.
+
+Return this exact top-level shape:
+{
+  "currency": "INR",
+  "part_name": string or null,
+  "raw_material_type": "ms" | "ss" | "aluminium" | "copper" | "unknown",
+  "raw_material_code": string or null,
+  "per_part_breakdown": [
+    {
+      "part_number": string,
+      "component_name": string or null,
+      "component_type": "tube" | "sheet" | "rod" | "accessory" | "unknown",
+      "tube_type": string,
+      "material_type": "ms" | "ss" | "aluminium" | "copper" | "unknown" | null,
+      "material_code": string or null,
+      "per_set_qty": number,
+      "dimensions": {
+        "length_mm": number or null,
+        "width_or_outer_dia_mm": number or null,
+        "secondary_width_mm": number or null,
+        "thickness_or_wall_thickness_mm": number or null
+      },
+      "bends_per_part": number,
+      "cutting_metrics": {
+        "laser_cutting_length_mm": number,
+        "press_machine_hits_count": number
+      },
+      "nesting_layout_hint": {
+        "nesting_strategy": string,
+        "recommended_grain_or_cut_direction": string
+      },
+      "notes": []
+    }
+  ],
+  "assembly_level_fabrication": {
+    "total_assembly_welding_length_mm": number,
+    "notes": []
+  },
+  "confidence": number,
+  "notes": []
+}
+
+Extraction rules:
+- Extract all visible BOM/detail-table parts, not just the main tube.
+- Do not calculate costs, weights, scrap, or painting. Backend will calculate those.
+- Use null where dimensions are not visible.
+- For square tube 45x45x4, component_type is tube, tube_type is "Square 45x45x4", width_or_outer_dia_mm is 45, secondary_width_mm is 45, thickness is 4.
+- For round tube Dia 19x2, width_or_outer_dia_mm is 19 and thickness is 2.
+- For a rectangular/square sheet or plate, length and width go into length_mm and width_or_outer_dia_mm; thickness goes into thickness_or_wall_thickness_mm.
+- For a rod/bar/accessory, length goes into length_mm and diameter/outer size goes into width_or_outer_dia_mm.
+- Detect bends per part from bend/fold/formed angle/tube bend indications.
+- laser_cutting_length_mm is the perimeter/profile cut length visible for that part. Rectangular perimeter = 2 x (L + W). Circular cut = pi x diameter.
+- press_machine_hits_count is number of punched/pressed cut surfaces/features if visible. If unclear, use 0 and explain in notes.
+- total_assembly_welding_length_mm should come from visible weld symbols/locations; if unclear estimate from joint perimeters and explain in notes.
+- Material detection: C-K201/K201/304/316/stainless means ss. MS/IS2062/E250/E350 means ms. AL/6061/6082 means aluminium. CU/copper/C11000 means copper.
 """
 
 
@@ -197,3 +258,58 @@ def extract_dimensions_with_gemini(content: bytes, content_type: str | None) -> 
 
     extracted.source = "gemini_api"
     return extracted
+
+
+def _gemini_generate_json(content: bytes, content_type: str | None, prompt: str) -> dict:
+    provider = os.getenv("GEMINI_PROVIDER", "gemini_api").lower()
+    api_key = os.getenv("GEMINI_API_KEY")
+    project = os.getenv("GOOGLE_CLOUD_PROJECT")
+    location = os.getenv("GOOGLE_CLOUD_LOCATION", "asia-south1")
+    model = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
+
+    if provider not in {"gemini_api", "vertex_ai"}:
+        raise HTTPException(status_code=503, detail="GEMINI_PROVIDER must be gemini_api or vertex_ai.")
+    if provider == "gemini_api" and (not api_key or api_key == "your-gemini-api-key"):
+        raise HTTPException(status_code=503, detail="Set GEMINI_API_KEY to call Gemini API for dimension extraction.")
+    if provider == "vertex_ai" and not project:
+        raise HTTPException(status_code=503, detail="Set GOOGLE_CLOUD_PROJECT to call Gemini through Vertex AI.")
+    if model not in ALLOWED_GEMINI_MODELS:
+        raise HTTPException(status_code=503, detail=f"GEMINI_MODEL must be one of: {', '.join(sorted(ALLOWED_GEMINI_MODELS))}.")
+
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="Install google-genai to enable Gemini API extraction.") from exc
+
+    image_content, mime_type = image_bytes_for_gemini(content, content_type)
+    client = genai.Client(vertexai=True, project=project, location=location) if provider == "vertex_ai" else genai.Client(api_key=api_key)
+
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=[types.Part.from_bytes(data=image_content, mime_type=mime_type), prompt],
+            config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json"),
+        )
+    except Exception as exc:
+        message = str(exc)
+        if "SERVICE_DISABLED" in message:
+            raise HTTPException(status_code=503, detail="Gemini/Vertex AI API is disabled for this project. Enable the API, then retry.") from exc
+        if "BILLING_DISABLED" in message or "requires billing to be enabled" in message:
+            raise HTTPException(status_code=402, detail="This Gemini request requires billing for the selected Google project.") from exc
+        if "PERMISSION_DENIED" in message:
+            raise HTTPException(status_code=403, detail=f"Gemini API permission denied: {message}") from exc
+        if "RESOURCE_EXHAUSTED" in message or "Quota exceeded" in message:
+            raise HTTPException(status_code=429, detail=f"Gemini quota is exhausted for model {model}.") from exc
+        raise HTTPException(status_code=502, detail=f"Gemini API extraction failed: {message}") from exc
+
+    if not response.text:
+        raise HTTPException(status_code=502, detail="Gemini returned an empty extraction response.")
+    return clean_json_response(response.text)
+
+
+def extract_structured_with_gemini(content: bytes, content_type: str | None) -> StructuredExtraction:
+    try:
+        return StructuredExtraction.model_validate(_gemini_generate_json(content, content_type, STRUCTURED_EXTRACTION_PROMPT))
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=f"Gemini returned a response that could not be parsed as structured extraction JSON: {exc}") from exc

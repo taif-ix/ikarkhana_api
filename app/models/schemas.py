@@ -154,3 +154,104 @@ class EstimateResponse(BaseModel):
     items: list[LineItem]
     process_breakdown: ProcessBreakdown
     calculation_steps: list[CalculationStep]
+
+
+class ExtractedPartDimensions(BaseModel):
+    length_mm: float | None = None
+    width_or_outer_dia_mm: float | None = None
+    secondary_width_mm: float | None = None
+    thickness_or_wall_thickness_mm: float | None = None
+
+
+class ExtractedCuttingMetrics(BaseModel):
+    laser_cutting_length_mm: float = 0
+    press_machine_hits_count: int = 0
+
+
+class NestingLayoutHint(BaseModel):
+    nesting_strategy: str = ""
+    recommended_grain_or_cut_direction: str = ""
+
+
+class ExtractedCostPart(BaseModel):
+    part_number: str
+    component_name: str | None = None
+    component_type: str
+    tube_type: str = "NA"
+    material_type: str | None = None
+    material_code: str | None = None
+    per_set_qty: int = 1
+    dimensions: ExtractedPartDimensions = Field(default_factory=ExtractedPartDimensions)
+    bends_per_part: int = 0
+    cutting_metrics: ExtractedCuttingMetrics = Field(default_factory=ExtractedCuttingMetrics)
+    nesting_layout_hint: NestingLayoutHint = Field(default_factory=NestingLayoutHint)
+    notes: list[str] = Field(default_factory=list)
+
+    @field_validator("notes", mode="before")
+    @classmethod
+    def normalize_part_notes(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        return [str(value)]
+
+
+class ExtractedAssemblyFabrication(BaseModel):
+    total_assembly_welding_length_mm: float = 0
+    notes: list[str] = Field(default_factory=list)
+
+
+class StructuredExtraction(BaseModel):
+    currency: str = "INR"
+    part_name: str | None = None
+    raw_material_type: str | None = None
+    raw_material_code: str | None = None
+    per_part_breakdown: list[ExtractedCostPart] = Field(default_factory=list)
+    assembly_level_fabrication: ExtractedAssemblyFabrication = Field(default_factory=ExtractedAssemblyFabrication)
+    confidence: float = 0
+    notes: list[str] = Field(default_factory=list)
+
+
+class WeightLedger(BaseModel):
+    unit_gross_rm_weight_kg: float
+    unit_net_finished_weight_kg: float
+    unit_scrap_waste_weight_kg: float
+    total_set_gross_weight_kg: float
+
+
+class CalculatedCosts(BaseModel):
+    material_cost: float
+    laser_cutting_cost_estimate: float
+    machine_punching_cost_estimate: float
+    bending_cost: float
+    painting_cost: float
+    total_single_part_cost_via_laser: float
+    total_single_part_cost_via_machine: float
+    total_combined_set_cost_via_laser: float
+    total_combined_set_cost_via_machine: float
+
+
+class CostedPartBreakdown(ExtractedCostPart):
+    surface_area_sq_meter: float
+    weight_ledger: WeightLedger
+    calculated_costs: CalculatedCosts
+    calculation_steps: list[CalculationStep] = Field(default_factory=list)
+
+
+class AssemblyLevelFabrication(BaseModel):
+    total_assembly_welding_length_mm: float
+    welding_labor_cost: float
+    tacking_fixed_setup_cost: float
+    grand_total_assembly_cost_via_laser: float
+    grand_total_assembly_cost_via_machine: float
+
+
+class StructuredCostBreakdown(BaseModel):
+    currency: str = "INR"
+    part_name: str | None = None
+    per_part_breakdown: list[CostedPartBreakdown]
+    assembly_level_fabrication: AssemblyLevelFabrication
+    assumptions: list[str] = Field(default_factory=list)

@@ -15,9 +15,9 @@ from app.core.config import (
     RATE_PER_SQ_METER_PAINT,
     LABOR_WELDING_PER_METER,
 )
-from app.models.schemas import EstimateResponse, ExtractedDimensions, GeminiConfig
-from app.services.estimator import calculate_estimate
-from app.services.vision import extract_dimensions_with_gemini, image_bytes_for_preview, package_installed
+from app.models.schemas import EstimateResponse, ExtractedDimensions, GeminiConfig, StructuredCostBreakdown, StructuredExtraction
+from app.services.estimator import calculate_estimate, calculate_structured_cost_breakdown
+from app.services.vision import extract_dimensions_with_gemini, extract_structured_with_gemini, image_bytes_for_preview, package_installed
 
 
 router = APIRouter()
@@ -35,7 +35,7 @@ def api_root() -> dict[str, object]:
         "status": "ok",
         "frontend_repo": "https://github.com/taif-ix/ikarkhana_web",
         "docs": "/docs",
-        "endpoints": ["/health", "/gemini-config", "/diagram-preview", "/extract-dimensions", "/estimate"],
+        "endpoints": ["/health", "/gemini-config", "/diagram-preview", "/extract-dimensions", "/extract-structured", "/extract-cost-breakdown", "/estimate"],
     }
 
 
@@ -65,6 +65,37 @@ def vertex_config() -> GeminiConfig:
 async def extract_dimensions(diagram: UploadFile = File(...)) -> ExtractedDimensions:
     content = await diagram.read()
     return extract_dimensions_with_gemini(content, diagram.content_type)
+
+
+@router.post("/extract-structured", response_model=StructuredExtraction)
+async def extract_structured(diagram: UploadFile = File(...)) -> StructuredExtraction:
+    content = await diagram.read()
+    return extract_structured_with_gemini(content, diagram.content_type)
+
+
+@router.post("/extract-cost-breakdown", response_model=StructuredCostBreakdown)
+async def extract_cost_breakdown(
+    diagram: UploadFile = File(...),
+    material_rate_per_kg: float | None = Form(RATE_PER_KG),
+    laser_cutting_rate_per_meter: float = Form(RATE_PER_CUT_METER),
+    press_machine_rate_per_hit: float = Form(RATE_PER_PRESS_MACHINE_HIT),
+    bend_rate_per_bend: float = Form(RATE_PER_BEND_STROKE),
+    welding_labor_per_meter: float = Form(LABOR_WELDING_PER_METER),
+    painting_rate_per_m2: float = Form(RATE_PER_SQ_METER_PAINT),
+    tacking_fixed_setup_cost: float = Form(LABOR_TACKING_FIXED),
+) -> StructuredCostBreakdown:
+    content = await diagram.read()
+    extraction = extract_structured_with_gemini(content, diagram.content_type)
+    return calculate_structured_cost_breakdown(
+        extraction,
+        material_rate_per_kg=material_rate_per_kg,
+        laser_cutting_rate_per_meter=laser_cutting_rate_per_meter,
+        press_machine_rate_per_hit=press_machine_rate_per_hit,
+        bend_rate_per_bend=bend_rate_per_bend,
+        welding_labor_per_meter=welding_labor_per_meter,
+        painting_rate_per_m2=painting_rate_per_m2,
+        tacking_fixed_setup_cost=tacking_fixed_setup_cost,
+    )
 
 
 @router.post("/diagram-preview")
