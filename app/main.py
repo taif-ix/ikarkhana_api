@@ -35,9 +35,6 @@ RATE_PER_SQ_METER_PAINT = 120.00
 RATE_PER_PRESS_MACHINE_HIT = 5.00
 LABOR_WELDING_PER_METER = 400.00
 LABOR_TACKING_FIXED = 1040.00
-ROD_SUPPLIER_LENGTH_MM = 6000.00
-SHEET_SUPPLIER_LENGTH_MM = 2500.00
-SHEET_SUPPLIER_WIDTH_MM = 1250.00
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ALLOWED_GEMINI_MODELS = {
     "gemini-2.5-pro",
@@ -189,35 +186,10 @@ def money(value: float) -> str:
     return f"{CURRENCY_UNIT} {round_money(value)}"
 
 
-def optional_float(value: float | str | None) -> float | None:
-    if value is None or value == "":
-        return None
-    return float(value)
-
-
-def form_bool(value: bool | str | None, default: bool = False) -> bool:
-    if value is None or value == "":
-        return default
-    if isinstance(value, bool):
-        return value
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
 def square_tube_weight(outer_mm: float, thickness_mm: float, length_mm: float) -> float:
     inner = max(outer_mm - (2 * thickness_mm), 0)
     area = (outer_mm * outer_mm) - (inner * inner)
     return area * length_mm * SS304_DENSITY_KG_PER_MM3
-
-
-def rectangular_tube_weight(outer_a_mm: float, outer_b_mm: float, thickness_mm: float, length_mm: float) -> float:
-    inner_a = max(outer_a_mm - (2 * thickness_mm), 0)
-    inner_b = max(outer_b_mm - (2 * thickness_mm), 0)
-    area = (outer_a_mm * outer_b_mm) - (inner_a * inner_b)
-    return area * length_mm * SS304_DENSITY_KG_PER_MM3
-
-
-def solid_rectangular_bar_weight(outer_a_mm: float, outer_b_mm: float, length_mm: float) -> float:
-    return outer_a_mm * outer_b_mm * length_mm * SS304_DENSITY_KG_PER_MM3
 
 
 def round_tube_weight(od_mm: float, thickness_mm: float, length_mm: float) -> float:
@@ -274,63 +246,6 @@ def square_tube_steps(name: str, outer_mm: float, thickness_mm: float, length_mm
             name=f"{name} weight",
             formula="Weight = Volume x SS304 density",
             substituted_values=f"{round(volume, 3)} x {SS304_DENSITY_KG_PER_MM3} kg/mm3",
-            result=kg(weight),
-        ),
-    ]
-
-
-def rectangular_tube_steps(
-    name: str,
-    outer_a_mm: float,
-    outer_b_mm: float,
-    thickness_mm: float,
-    length_mm: float,
-    weight: float,
-) -> list[CalculationStep]:
-    inner_a = max(outer_a_mm - (2 * thickness_mm), 0)
-    inner_b = max(outer_b_mm - (2 * thickness_mm), 0)
-    area = (outer_a_mm * outer_b_mm) - (inner_a * inner_b)
-    volume = area * length_mm
-    return [
-        CalculationStep(
-            section="Weight",
-            name=f"{name} inner size",
-            formula="Inner size = outer size - (2 x wall thickness)",
-            substituted_values=f"({outer_a_mm} - 2 x {thickness_mm}) x ({outer_b_mm} - 2 x {thickness_mm})",
-            result=f"{inner_a} x {inner_b} mm",
-        ),
-        CalculationStep(
-            section="Weight",
-            name=f"{name} steel area",
-            formula="Steel area = outer A x outer B - inner A x inner B",
-            substituted_values=f"({outer_a_mm} x {outer_b_mm}) - ({inner_a} x {inner_b})",
-            result=f"{round(area, 3)} mm2",
-        ),
-        CalculationStep(
-            section="Weight",
-            name=f"{name} weight",
-            formula="Weight = steel area x length x SS304 density",
-            substituted_values=f"{round(area, 3)} x {length_mm} x {SS304_DENSITY_KG_PER_MM3} kg/mm3",
-            result=kg(weight),
-        ),
-    ]
-
-
-def solid_rectangular_bar_steps(name: str, outer_a_mm: float, outer_b_mm: float, length_mm: float, weight: float) -> list[CalculationStep]:
-    area = outer_a_mm * outer_b_mm
-    return [
-        CalculationStep(
-            section="Weight",
-            name=f"{name} steel area",
-            formula="Solid rectangular/square area = A x B",
-            substituted_values=f"{outer_a_mm} x {outer_b_mm}",
-            result=f"{round(area, 3)} mm2",
-        ),
-        CalculationStep(
-            section="Weight",
-            name=f"{name} weight",
-            formula="Weight = area x length x SS304 density",
-            substituted_values=f"{round(area, 3)} x {length_mm} x {SS304_DENSITY_KG_PER_MM3} kg/mm3",
             result=kg(weight),
         ),
     ]
@@ -404,123 +319,6 @@ def rod_steps(name: str, diameter_mm: float, length_mm: float, quantity: int, we
             result=kg(weight),
         ),
     ]
-
-
-def rod_stock_steps(name: str, part_length_mm: float, quantity: int = 1) -> list[CalculationStep]:
-    if part_length_mm <= 0:
-        pieces_per_stock = 0
-        stock_count = 0
-        offcut = 0
-    else:
-        pieces_per_stock = max(math.floor(ROD_SUPPLIER_LENGTH_MM / part_length_mm), 1)
-        stock_count = math.ceil(quantity / pieces_per_stock)
-        offcut = (stock_count * ROD_SUPPLIER_LENGTH_MM) - (quantity * part_length_mm)
-
-    return [
-        CalculationStep(
-            section="Raw material",
-            name=f"{name} stock selection",
-            formula="Rod/bar stock length = supplier standard length",
-            substituted_values=f"{ROD_SUPPLIER_LENGTH_MM} mm standard supplier rod length",
-            result=f"{ROD_SUPPLIER_LENGTH_MM} mm",
-        ),
-        CalculationStep(
-            section="Raw material",
-            name=f"{name} pieces per rod",
-            formula="Pieces per supplier rod = floor(supplier length / part cut length)",
-            substituted_values=f"floor({ROD_SUPPLIER_LENGTH_MM} / {part_length_mm})",
-            result=f"{pieces_per_stock} pieces",
-        ),
-        CalculationStep(
-            section="Raw material",
-            name=f"{name} rod offcut",
-            formula="Offcut = stock rods used x supplier length - required pieces x part length",
-            substituted_values=f"({stock_count} x {ROD_SUPPLIER_LENGTH_MM}) - ({quantity} x {part_length_mm})",
-            result=f"{round(offcut, 3)} mm",
-        ),
-    ]
-
-
-def rectangular_blank_cutting_steps(name: str, length_mm: float, width_mm: float, quantity: int = 1) -> list[CalculationStep]:
-    perimeter = 2 * (length_mm + width_mm)
-    return [
-        CalculationStep(
-            section="Cutting",
-            name=f"{name} blank cutting length",
-            formula="Rectangular blank cutting length = 2 x (length + width) x quantity",
-            substituted_values=f"2 x ({length_mm} + {width_mm}) x {quantity}",
-            result=f"{round(perimeter * quantity, 3)} mm",
-        )
-    ]
-
-
-def rectangular_sheet_stock_steps(name: str, length_mm: float, width_mm: float, quantity: int = 1) -> list[CalculationStep]:
-    blank_area = length_mm * width_mm
-    sheet_area = SHEET_SUPPLIER_LENGTH_MM * SHEET_SUPPLIER_WIDTH_MM
-
-    if length_mm <= 0 or width_mm <= 0:
-        pieces_per_sheet = 0
-        sheets_required = 0
-        offcut_area = 0.0
-    else:
-        normal_fit = math.floor(SHEET_SUPPLIER_LENGTH_MM / length_mm) * math.floor(SHEET_SUPPLIER_WIDTH_MM / width_mm)
-        rotated_fit = math.floor(SHEET_SUPPLIER_LENGTH_MM / width_mm) * math.floor(SHEET_SUPPLIER_WIDTH_MM / length_mm)
-        pieces_per_sheet = max(normal_fit, rotated_fit, 1)
-        sheets_required = math.ceil(quantity / pieces_per_sheet)
-        offcut_area = (sheets_required * sheet_area) - (quantity * blank_area)
-
-    return [
-        CalculationStep(
-            section="Raw material",
-            name=f"{name} sheet selection",
-            formula="Blank sheet stock size = supplier standard sheet length x width",
-            substituted_values=f"{SHEET_SUPPLIER_LENGTH_MM} x {SHEET_SUPPLIER_WIDTH_MM}",
-            result=f"{SHEET_SUPPLIER_LENGTH_MM} x {SHEET_SUPPLIER_WIDTH_MM} mm",
-        ),
-        CalculationStep(
-            section="Raw material",
-            name=f"{name} pieces per sheet",
-            formula="Pieces per sheet = max(floor(sheet L / blank L) x floor(sheet W / blank W), rotated fit)",
-            substituted_values=(
-                f"max(floor({SHEET_SUPPLIER_LENGTH_MM} / {length_mm}) x floor({SHEET_SUPPLIER_WIDTH_MM} / {width_mm}), "
-                f"floor({SHEET_SUPPLIER_LENGTH_MM} / {width_mm}) x floor({SHEET_SUPPLIER_WIDTH_MM} / {length_mm}))"
-            ),
-            result=f"{pieces_per_sheet} pieces",
-        ),
-        CalculationStep(
-            section="Raw material",
-            name=f"{name} sheet offcut area",
-            formula="Offcut area = sheets used x sheet area - required blanks x blank area",
-            substituted_values=f"({sheets_required} x {round(sheet_area, 3)}) - ({quantity} x {round(blank_area, 3)})",
-            result=f"{round(offcut_area, 3)} mm2",
-        ),
-    ]
-
-
-def circular_cutting_steps(name: str, diameter_mm: float, quantity: int = 1) -> list[CalculationStep]:
-    perimeter = math.pi * diameter_mm
-    return [
-        CalculationStep(
-            section="Cutting",
-            name=f"{name} circular cutting length",
-            formula="Circular cutting length = pi x diameter x quantity",
-            substituted_values=f"pi x {diameter_mm} x {quantity}",
-            result=f"{round(perimeter * quantity, 3)} mm",
-        )
-    ]
-
-
-def hollow_rectangular_area_step(name: str, outer_a_mm: float, outer_b_mm: float, thickness_mm: float) -> CalculationStep:
-    inner_a = max(outer_a_mm - (2 * thickness_mm), 0)
-    inner_b = max(outer_b_mm - (2 * thickness_mm), 0)
-    area = (outer_a_mm * outer_b_mm) - (inner_a * inner_b)
-    return CalculationStep(
-        section="Weight",
-        name=f"{name} hollow rectangular/square area",
-        formula="Hollow rectangular/square steel area = outer A x outer B - inner A x inner B",
-        substituted_values=f"({outer_a_mm} x {outer_b_mm}) - ({inner_a} x {inner_b})",
-        result=f"{round(area, 3)} mm2",
-    )
 
 
 def find_step(steps: list[CalculationStep], name: str) -> CalculationStep:
@@ -815,14 +613,6 @@ async def estimate(
     welding_labor_per_meter: float = Form(LABOR_WELDING_PER_METER),
     surface_rate_per_m2: float = Form(RATE_PER_SQ_METER_PAINT),
     surface_type: Literal["satin_passivated", "painted", "none"] = Form("satin_passivated"),
-    main_material_form: str = Form("rod_profile"),
-    main_profile_shape: str = Form("square"),
-    main_profile_is_hollow: bool | str | None = Form(True),
-    main_profile_length_mm: float | str | None = Form(None),
-    main_profile_outer_a_mm: float | str | None = Form(None),
-    main_profile_outer_b_mm: float | str | None = Form(None),
-    main_profile_diameter_mm: float | str | None = Form(None),
-    main_profile_thickness_mm: float | str | None = Form(None),
     square_tube_length_mm: float = Form(2581.0),
     square_tube_outer_mm: float = Form(45.0),
     square_tube_thickness_mm: float = Form(4.0),
@@ -852,50 +642,7 @@ async def estimate(
     content = await diagram.read()
     model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 
-    main_profile_is_hollow_bool = form_bool(main_profile_is_hollow, True)
-    main_profile_length_value = optional_float(main_profile_length_mm)
-    main_profile_outer_a_value = optional_float(main_profile_outer_a_mm)
-    main_profile_outer_b_value = optional_float(main_profile_outer_b_mm)
-    main_profile_diameter_value = optional_float(main_profile_diameter_mm)
-    main_profile_thickness_value = optional_float(main_profile_thickness_mm)
-
-    profile_shape = (main_profile_shape or "square").strip().lower()
-    if profile_shape not in {"circular", "square", "rectangular"}:
-        profile_shape = "square"
-    profile_length_mm = main_profile_length_value or square_tube_length_mm
-    profile_thickness_mm = main_profile_thickness_value or square_tube_thickness_mm
-    profile_outer_a_mm = main_profile_outer_a_value or square_tube_outer_mm
-    profile_outer_b_mm = main_profile_outer_b_value or profile_outer_a_mm
-    profile_diameter_mm = main_profile_diameter_value or square_tube_outer_mm
-
-    if profile_shape == "circular":
-        profile_label = "Circular hollow tube" if main_profile_is_hollow_bool else "Circular solid rod"
-        tube_weight = (
-            round_tube_weight(profile_diameter_mm, profile_thickness_mm, profile_length_mm)
-            if main_profile_is_hollow_bool
-            else rod_weight(profile_diameter_mm, profile_length_mm)
-        )
-        profile_surface_perimeter_mm = math.pi * profile_diameter_mm
-        profile_weight_step_name = f"{profile_label} weight" if main_profile_is_hollow_bool else f"{profile_label} total weight"
-    elif profile_shape == "rectangular":
-        profile_label = "Rectangular hollow tube" if main_profile_is_hollow_bool else "Rectangular solid bar"
-        tube_weight = (
-            rectangular_tube_weight(profile_outer_a_mm, profile_outer_b_mm, profile_thickness_mm, profile_length_mm)
-            if main_profile_is_hollow_bool
-            else solid_rectangular_bar_weight(profile_outer_a_mm, profile_outer_b_mm, profile_length_mm)
-        )
-        profile_surface_perimeter_mm = 2 * (profile_outer_a_mm + profile_outer_b_mm)
-        profile_weight_step_name = f"{profile_label} weight"
-    else:
-        profile_label = "Square hollow tube" if main_profile_is_hollow_bool else "Square solid bar"
-        tube_weight = (
-            square_tube_weight(profile_outer_a_mm, profile_thickness_mm, profile_length_mm)
-            if main_profile_is_hollow_bool
-            else solid_rectangular_bar_weight(profile_outer_a_mm, profile_outer_a_mm, profile_length_mm)
-        )
-        profile_surface_perimeter_mm = 4 * profile_outer_a_mm
-        profile_weight_step_name = f"{profile_label} weight"
-
+    tube_weight = square_tube_weight(square_tube_outer_mm, square_tube_thickness_mm, square_tube_length_mm)
     bottom_weight = plate_weight(bottom_plate_l_mm, bottom_plate_w_mm, bottom_plate_t_mm)
     top_weight = plate_weight(top_plate_l_mm, top_plate_w_mm, top_plate_t_mm)
     handle_weight = round_tube_weight(handle_od_mm, handle_thickness_mm, handle_length_mm)
@@ -904,68 +651,18 @@ async def estimate(
     chair_angle_weight_kg = chair_angle_weight_per_m * (chair_angle_length_mm / 1000)
 
     calculation_steps: list[CalculationStep] = []
-    calculation_steps.extend(rod_stock_steps(profile_label, profile_length_mm, 1))
-    if profile_shape == "circular":
-        if main_profile_is_hollow_bool:
-            calculation_steps.extend(round_tube_steps(profile_label, profile_diameter_mm, profile_thickness_mm, profile_length_mm, tube_weight))
-        else:
-            calculation_steps.extend(rod_steps(profile_label, profile_diameter_mm, profile_length_mm, 1, tube_weight))
-    elif profile_shape == "rectangular":
-        if main_profile_is_hollow_bool:
-            calculation_steps.extend(
-                rectangular_tube_steps(
-                    profile_label,
-                    profile_outer_a_mm,
-                    profile_outer_b_mm,
-                    profile_thickness_mm,
-                    profile_length_mm,
-                    tube_weight,
-                )
-            )
-            calculation_steps.append(hollow_rectangular_area_step(profile_label, profile_outer_a_mm, profile_outer_b_mm, profile_thickness_mm))
-        else:
-            calculation_steps.extend(solid_rectangular_bar_steps(profile_label, profile_outer_a_mm, profile_outer_b_mm, profile_length_mm, tube_weight))
-    else:
-        if main_profile_is_hollow_bool:
-            calculation_steps.extend(
-                square_tube_steps(
-                    profile_label,
-                    profile_outer_a_mm,
-                    profile_thickness_mm,
-                    profile_length_mm,
-                    tube_weight,
-                )
-            )
-            calculation_steps.append(hollow_rectangular_area_step(profile_label, profile_outer_a_mm, profile_outer_a_mm, profile_thickness_mm))
-        else:
-            calculation_steps.extend(
-                solid_rectangular_bar_steps(
-                    profile_label,
-                    profile_outer_a_mm,
-                    profile_outer_a_mm,
-                    profile_length_mm,
-                    tube_weight,
-                )
-            )
-    calculation_steps.append(
-        CalculationStep(
-            section="Raw material",
-            name="Main profile classification",
-            formula="Main profile classification = extracted material form + shape + hollow/solid",
-            substituted_values=f"{main_material_form}, {profile_shape}, {'hollow' if main_profile_is_hollow_bool else 'solid'}",
-            result=profile_label,
+    calculation_steps.extend(
+        square_tube_steps(
+            "Square tube",
+            square_tube_outer_mm,
+            square_tube_thickness_mm,
+            square_tube_length_mm,
+            tube_weight,
         )
     )
-    calculation_steps.extend(rectangular_sheet_stock_steps("Bottom plate", bottom_plate_l_mm, bottom_plate_w_mm, 1))
-    calculation_steps.extend(rectangular_blank_cutting_steps("Bottom plate", bottom_plate_l_mm, bottom_plate_w_mm, 1))
     calculation_steps.extend(plate_steps("Bottom plate", bottom_plate_l_mm, bottom_plate_w_mm, bottom_plate_t_mm, bottom_weight))
-    calculation_steps.extend(rectangular_sheet_stock_steps("Top plate", top_plate_l_mm, top_plate_w_mm, 1))
-    calculation_steps.extend(rectangular_blank_cutting_steps("Top plate", top_plate_l_mm, top_plate_w_mm, 1))
     calculation_steps.extend(plate_steps("Top plate", top_plate_l_mm, top_plate_w_mm, top_plate_t_mm, top_weight))
-    calculation_steps.extend(rod_stock_steps("Handle tube", handle_length_mm, 1))
     calculation_steps.extend(round_tube_steps("Handle tube", handle_od_mm, handle_thickness_mm, handle_length_mm, handle_weight))
-    calculation_steps.extend(circular_cutting_steps("Screwing piece face", screw_piece_dia_mm, screw_piece_qty))
-    calculation_steps.extend(rod_stock_steps("Screwing piece", screw_piece_length_mm, screw_piece_qty))
     calculation_steps.extend(rod_steps("Screwing pieces", screw_piece_dia_mm, screw_piece_length_mm, screw_piece_qty, screw_weight))
     calculation_steps.append(
         CalculationStep(
@@ -978,7 +675,7 @@ async def estimate(
     )
 
     items = [
-        (profile_label, 1, tube_weight, profile_weight_step_name),
+        ("Square tube 45x45x4", 1, tube_weight, "Square tube weight"),
         ("Bottom plate", 1, bottom_weight, "Bottom plate weight"),
         ("Top plate", 1, top_weight, "Top plate weight"),
         ("Chair angle / bracket", 1, chair_angle_weight_kg, "Chair angle / bracket weight"),
@@ -1036,7 +733,7 @@ async def estimate(
     )
 
     surface_area = (
-        tube_surface_area_m2(profile_surface_perimeter_mm, profile_length_mm)
+        tube_surface_area_m2(4 * square_tube_outer_mm, square_tube_length_mm)
         + plate_surface_area_m2(bottom_plate_l_mm, bottom_plate_w_mm, bottom_plate_t_mm)
         + plate_surface_area_m2(top_plate_l_mm, top_plate_w_mm, top_plate_t_mm)
         + tube_surface_area_m2(math.pi * handle_od_mm, handle_length_mm)
@@ -1049,7 +746,7 @@ async def estimate(
                 name="Surface area",
                 formula="Surface area = tube outside perimeter x length + plate exposed areas + handle outside perimeter x length",
                 substituted_values=(
-                    f"({round(profile_surface_perimeter_mm, 3)} x {profile_length_mm}) + "
+                    f"(4 x {square_tube_outer_mm} x {square_tube_length_mm}) + "
                     f"plate areas + (pi x {handle_od_mm} x {handle_length_mm})"
                 ),
                 result=f"{round(surface_area, 4)} m2",
@@ -1128,9 +825,7 @@ async def estimate(
         assumptions=[
             f"Dimension extraction is handled by Gemini API with {model}; this costing step uses the submitted field values.",
             "Default values are based on LS10255 Pillar Assembly notes shared with the request.",
-            f"Main profile is costed as {profile_label} from submitted/extracted profile fields.",
-            "Rod/profile supplier stock is treated as 6000 mm length; rectangle/square sheet supplier stock is treated as 2500 x 1250 mm.",
-            "Detailed nesting optimization, scrap recovery, tax, packaging, transport, and supplier MOQ are not included.",
+            "Standard raw material nesting, scrap recovery, tax, packaging, transport, and supplier MOQ are not included.",
             "Chair angle weight uses kg/m x length because the detailed LS10269 geometry is not present in the upload.",
             f"Process cost includes cutting ({cutting_length_mm} mm), bending ({bend_count} strokes), welding ({weld_length_mm} mm), press hits ({press_machine_hits}), and optional tacking labor.",
         ],

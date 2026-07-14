@@ -16,7 +16,7 @@ This backend repo should stay API-only. It no longer serves bundled HTML/CSS/JS.
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-uvicorn backend.main:app --reload --port 8010
+uvicorn app.main:app --reload --port 8010
 ```
 
 Check the backend:
