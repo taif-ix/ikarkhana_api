@@ -169,8 +169,8 @@ class ExtractedCuttingMetrics(BaseModel):
 
 
 class NestingLayoutHint(BaseModel):
-    nesting_strategy: str = ""
-    recommended_grain_or_cut_direction: str = ""
+    nesting_strategy: str = "NA"
+    recommended_grain_or_cut_direction: str = "NA"
 
 
 class ExtractedCostPart(BaseModel):
@@ -197,6 +197,13 @@ class ExtractedCostPart(BaseModel):
         if isinstance(value, list):
             return [str(item) for item in value]
         return [str(value)]
+
+    @field_validator("tube_type", mode="before")
+    @classmethod
+    def normalize_tube_type(cls, value: object) -> str:
+        if value is None or value == "":
+            return "NA"
+        return str(value)
 
 
 class ExtractedAssemblyFabrication(BaseModel):

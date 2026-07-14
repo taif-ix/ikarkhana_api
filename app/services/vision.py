@@ -65,9 +65,17 @@ Do not invent hidden detail drawing dimensions.
 """
 
 STRUCTURED_EXTRACTION_PROMPT = """
-You are extracting a manufacturing costing part list from an engineering drawing.
+You are a deterministic sheet metal feature extraction engine.
+You are looking at this engineering drawing to pull raw parameters for a cost calculation.
 Return only a compact valid JSON object. Do not use markdown. Do not add comments.
 Use double quotes for all keys and valid JSON arrays/objects.
+
+STRICT RULES:
+1. Extract ONLY the literal text, numbers, dimensions, notes, symbols, and geometry explicitly printed on the document.
+2. If a specific dimension, feature count, sheet thickness, wall thickness, outer flange width, hole diameter, bend count, weld length, or material code is missing, blurry, hidden, or overlapping with another line, do NOT guess, extrapolate, infer, or estimate it.
+3. For any text field you cannot verify with 100% certainty, output exactly "NULL - Insufficient Data".
+4. For any numeric field you cannot verify with 100% certainty, output null and add "NULL - Insufficient Data" in that part's notes.
+5. Do not calculate costs, weights, scrap, or painting. Backend will calculate those from verified inputs only.
 
 Return this exact top-level shape:
 {

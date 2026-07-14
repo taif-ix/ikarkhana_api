@@ -67,13 +67,13 @@ async def extract_dimensions(diagram: UploadFile = File(...)) -> ExtractedDimens
     return extract_dimensions_with_gemini(content, diagram.content_type)
 
 
-@router.post("/extract-structured", response_model=StructuredExtraction)
+@router.post("/extract-structured", response_model=StructuredExtraction, response_model_exclude_none=True)
 async def extract_structured(diagram: UploadFile = File(...)) -> StructuredExtraction:
     content = await diagram.read()
     return extract_structured_with_gemini(content, diagram.content_type)
 
 
-@router.post("/extract-cost-breakdown", response_model=StructuredCostBreakdown)
+@router.post("/extract-cost-breakdown", response_model=StructuredCostBreakdown, response_model_exclude_none=True)
 async def extract_cost_breakdown(
     diagram: UploadFile = File(...),
     material_rate_per_kg: float | None = Form(RATE_PER_KG),
