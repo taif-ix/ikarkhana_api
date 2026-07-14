@@ -28,13 +28,21 @@ app.add_middleware(
 
 SS304_DENSITY_KG_PER_MM3 = 7.9e-6
 CURRENCY_UNIT = "INR"
-RATE_PER_KG = 255.00
-RATE_PER_CUT_METER = 30.00
-RATE_PER_BEND_STROKE = 5.00
+RATE_MS_PER_KG = 60.00
+RATE_SS_PER_KG = 240.00
+RATE_ALUMINIUM_PER_KG = 200.00
+RATE_COPPER_PER_KG = 900.00
+RATE_PER_KG = RATE_SS_PER_KG
+RATE_PER_CUT_METER = 200.00
+RATE_PER_BEND_STROKE = 2.00
 RATE_PER_SQ_METER_PAINT = 120.00
 RATE_PER_PRESS_MACHINE_HIT = 5.00
-LABOR_WELDING_PER_METER = 400.00
+LABOR_WELDING_PER_METER = 22.00
 LABOR_TACKING_FIXED = 1040.00
+SCRAP_RATE_PER_KG = 28.00
+ROD_STOCK_LENGTH_MM = 6000.00
+SHEET_STOCK_LENGTH_MM = 2500.00
+SHEET_STOCK_WIDTH_MM = 1250.00
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ALLOWED_GEMINI_MODELS = {
     "gemini-2.5-pro",
@@ -42,6 +50,33 @@ ALLOWED_GEMINI_MODELS = {
     "gemini-3.5-flash",
     "gemini-flash-latest",
     "gemini-flash-lite-latest",
+}
+
+MATERIALS = {
+    "ms": {
+        "label": "Mild Steel",
+        "density": 7.85e-6,
+        "default_rate": RATE_MS_PER_KG,
+        "codes": ["ms", "mild steel", "is2062", "e250", "e350"],
+    },
+    "ss": {
+        "label": "Stainless Steel",
+        "density": SS304_DENSITY_KG_PER_MM3,
+        "default_rate": RATE_SS_PER_KG,
+        "codes": ["ss", "stainless", "304", "316", "c-k201", "k201", "ck201"],
+    },
+    "aluminium": {
+        "label": "Aluminium",
+        "density": 2.70e-6,
+        "default_rate": RATE_ALUMINIUM_PER_KG,
+        "codes": ["al", "alu", "aluminium", "aluminum", "6061", "6082"],
+    },
+    "copper": {
+        "label": "Copper",
+        "density": 8.96e-6,
+        "default_rate": RATE_COPPER_PER_KG,
+        "codes": ["cu", "copper", "c11000", "etp"],
+    },
 }
 
 
@@ -86,6 +121,18 @@ class LineItem(BaseModel):
     material_cost: float
     process_cost: float
     total_cost: float
+    material_type: str = "ss"
+    material_label: str = "Stainless Steel"
+    material_rate_per_kg: float = RATE_SS_PER_KG
+    stock_form: str | None = None
+    stock_size: str | None = None
+    parts_per_stock: int | None = None
+    stock_weight_kg: float | None = None
+    gross_stock_cost: float | None = None
+    scrap_weight_kg: float | None = None
+    scrap_value: float | None = None
+    net_stock_cost_per_part: float | None = None
+    nesting_approach: str | None = None
     formulas: dict[str, CalculationStep] = Field(default_factory=dict)
 
 
@@ -94,11 +141,33 @@ class ProcessBreakdown(BaseModel):
     bending_cost: float
     welding_cost: float
     press_machine_cost: float
+    painting_cost: float = 0
     tacking_cost: float
     cutting_length_mm: float
+    cutting_surface_count: int = 0
     bend_count: int
     weld_length_mm: float
     press_machine_hits: int
+
+
+class MaterialSummary(BaseModel):
+    material_type: str
+    material_label: str
+    material_code: str | None
+    density_kg_per_mm3: float
+    rate_per_kg: float
+    default_rate_per_kg: float
+    source: str
+
+
+class StockSummary(BaseModel):
+    rod_stock_length_mm: float = ROD_STOCK_LENGTH_MM
+    sheet_stock_length_mm: float = SHEET_STOCK_LENGTH_MM
+    sheet_stock_width_mm: float = SHEET_STOCK_WIDTH_MM
+    scrap_rate_per_kg: float = SCRAP_RATE_PER_KG
+    total_scrap_weight_kg: float
+    total_scrap_value: float
+    approach: str
 
 
 class GeminiConfig(BaseModel):
@@ -114,6 +183,9 @@ class GeminiConfig(BaseModel):
 
 class ExtractedDimensions(BaseModel):
     part_name: str = "Pillar Assembly"
+    raw_material_type: str | None = None
+    raw_material_code: str | None = None
+    component_materials: list[dict[str, str | float | int | None]] = Field(default_factory=list)
     main_material_form: str | None = None
     main_profile_shape: str | None = None
     main_profile_is_hollow: bool | None = None
@@ -140,6 +212,7 @@ class ExtractedDimensions(BaseModel):
     chair_angle_weight_per_m: float | None = None
     chair_angle_length_mm: float | None = None
     cutting_length_mm: float | None = None
+    cutting_surface_count: int | None = None
     weld_length_mm: float | None = None
     bend_count: int | None = None
     confidence: float = 0
@@ -168,6 +241,8 @@ class EstimateResponse(BaseModel):
     total_process_cost: float
     surface_treatment_cost: float
     total_estimated_cost: float
+    material_summary: MaterialSummary
+    stock_summary: StockSummary
     assumptions: list[str]
     items: list[LineItem]
     process_breakdown: ProcessBreakdown
@@ -186,25 +261,130 @@ def money(value: float) -> str:
     return f"{CURRENCY_UNIT} {round_money(value)}"
 
 
-def square_tube_weight(outer_mm: float, thickness_mm: float, length_mm: float) -> float:
+def normalize_material_type(material_type: str | None, material_code: str | None = None) -> str:
+    haystack = f"{material_type or ''} {material_code or ''}".lower().replace("_", " ").replace("-", "")
+    for key, details in MATERIALS.items():
+        for code in details["codes"]:
+            if code.replace("-", "").lower() in haystack:
+                return key
+    return "ss"
+
+
+def material_details(material_type: str | None, material_code: str | None = None) -> dict:
+    return MATERIALS[normalize_material_type(material_type, material_code)]
+
+
+def material_density(material_type: str | None, material_code: str | None = None) -> float:
+    return float(material_details(material_type, material_code)["density"])
+
+
+def default_material_rate(material_type: str | None, material_code: str | None = None) -> float:
+    return float(material_details(material_type, material_code)["default_rate"])
+
+
+def section_area_mm2(
+    shape: str,
+    is_hollow: bool,
+    outer_a_mm: float,
+    outer_b_mm: float | None,
+    diameter_mm: float | None,
+    thickness_mm: float,
+) -> float:
+    normalized = (shape or "square").lower()
+    if normalized == "circular":
+        od = diameter_mm or outer_a_mm
+        if is_hollow:
+            inner = max(od - (2 * thickness_mm), 0)
+            return math.pi / 4 * ((od * od) - (inner * inner))
+        return math.pi / 4 * od * od
+
+    b = outer_b_mm or outer_a_mm
+    if is_hollow:
+        inner_a = max(outer_a_mm - (2 * thickness_mm), 0)
+        inner_b = max(b - (2 * thickness_mm), 0)
+        return (outer_a_mm * b) - (inner_a * inner_b)
+    return outer_a_mm * b
+
+
+def profile_weight(
+    shape: str,
+    is_hollow: bool,
+    outer_a_mm: float,
+    outer_b_mm: float | None,
+    diameter_mm: float | None,
+    thickness_mm: float,
+    length_mm: float,
+    density_kg_per_mm3: float,
+) -> float:
+    return section_area_mm2(shape, is_hollow, outer_a_mm, outer_b_mm, diameter_mm, thickness_mm) * length_mm * density_kg_per_mm3
+
+
+def square_tube_weight(outer_mm: float, thickness_mm: float, length_mm: float, density_kg_per_mm3: float = SS304_DENSITY_KG_PER_MM3) -> float:
     inner = max(outer_mm - (2 * thickness_mm), 0)
     area = (outer_mm * outer_mm) - (inner * inner)
-    return area * length_mm * SS304_DENSITY_KG_PER_MM3
+    return area * length_mm * density_kg_per_mm3
 
 
-def round_tube_weight(od_mm: float, thickness_mm: float, length_mm: float) -> float:
+def round_tube_weight(od_mm: float, thickness_mm: float, length_mm: float, density_kg_per_mm3: float = SS304_DENSITY_KG_PER_MM3) -> float:
     inner = max(od_mm - (2 * thickness_mm), 0)
     area = math.pi / 4 * ((od_mm * od_mm) - (inner * inner))
-    return area * length_mm * SS304_DENSITY_KG_PER_MM3
+    return area * length_mm * density_kg_per_mm3
 
 
-def plate_weight(length_mm: float, width_mm: float, thickness_mm: float) -> float:
-    return length_mm * width_mm * thickness_mm * SS304_DENSITY_KG_PER_MM3
+def plate_weight(length_mm: float, width_mm: float, thickness_mm: float, density_kg_per_mm3: float = SS304_DENSITY_KG_PER_MM3) -> float:
+    return length_mm * width_mm * thickness_mm * density_kg_per_mm3
 
 
-def rod_weight(diameter_mm: float, length_mm: float) -> float:
+def rod_weight(diameter_mm: float, length_mm: float, density_kg_per_mm3: float = SS304_DENSITY_KG_PER_MM3) -> float:
     area = math.pi / 4 * diameter_mm * diameter_mm
-    return area * length_mm * SS304_DENSITY_KG_PER_MM3
+    return area * length_mm * density_kg_per_mm3
+
+
+def rod_stock_summary(piece_weight_kg: float, piece_length_mm: float, quantity: int) -> dict[str, float | int | str]:
+    pieces_per_stock = max(int(ROD_STOCK_LENGTH_MM // piece_length_mm), 1) if piece_length_mm > 0 else 1
+    stock_count = math.ceil(quantity / pieces_per_stock)
+    used_per_full_stock_mm = min(pieces_per_stock * piece_length_mm, ROD_STOCK_LENGTH_MM)
+    leftover_per_full_stock_mm = max(ROD_STOCK_LENGTH_MM - used_per_full_stock_mm, 0)
+    stock_weight = piece_weight_kg * (ROD_STOCK_LENGTH_MM / piece_length_mm) if piece_length_mm > 0 else piece_weight_kg
+    scrap_weight = stock_weight * (leftover_per_full_stock_mm / ROD_STOCK_LENGTH_MM) * stock_count
+    gross_stock_cost = stock_weight * stock_count
+    return {
+        "parts_per_stock": pieces_per_stock,
+        "stock_count": stock_count,
+        "stock_weight_kg": stock_weight,
+        "gross_stock_weight_kg": gross_stock_cost,
+        "scrap_weight_kg": scrap_weight,
+        "leftover_per_stock_mm": leftover_per_full_stock_mm,
+        "approach": f"Linear 6000 mm bar nesting: floor(6000 / {piece_length_mm}) = {pieces_per_stock} pieces, leftover {round(leftover_per_full_stock_mm, 2)} mm per full stock.",
+    }
+
+
+def sheet_nesting_summary(length_mm: float, width_mm: float, thickness_mm: float, density_kg_per_mm3: float, quantity: int) -> dict[str, float | int | str]:
+    normal_cols = int(SHEET_STOCK_LENGTH_MM // length_mm) if length_mm > 0 else 0
+    normal_rows = int(SHEET_STOCK_WIDTH_MM // width_mm) if width_mm > 0 else 0
+    normal_count = normal_cols * normal_rows
+    rotated_cols = int(SHEET_STOCK_LENGTH_MM // width_mm) if width_mm > 0 else 0
+    rotated_rows = int(SHEET_STOCK_WIDTH_MM // length_mm) if length_mm > 0 else 0
+    rotated_count = rotated_cols * rotated_rows
+    if rotated_count > normal_count:
+        parts_per_sheet = rotated_count
+        approach = f"Rotated grid nesting on 2500 x 1250 sheet: floor(2500/{width_mm}) x floor(1250/{length_mm}) = {parts_per_sheet} parts."
+    else:
+        parts_per_sheet = normal_count
+        approach = f"Straight grid nesting on 2500 x 1250 sheet: floor(2500/{length_mm}) x floor(1250/{width_mm}) = {parts_per_sheet} parts."
+    parts_per_sheet = max(parts_per_sheet, 1)
+    sheet_count = math.ceil(quantity / parts_per_sheet)
+    sheet_weight = plate_weight(SHEET_STOCK_LENGTH_MM, SHEET_STOCK_WIDTH_MM, thickness_mm, density_kg_per_mm3)
+    part_weight = plate_weight(length_mm, width_mm, thickness_mm, density_kg_per_mm3)
+    used_weight = part_weight * min(quantity, parts_per_sheet * sheet_count)
+    scrap_weight = max((sheet_weight * sheet_count) - used_weight, 0)
+    return {
+        "parts_per_stock": parts_per_sheet,
+        "stock_count": sheet_count,
+        "stock_weight_kg": sheet_weight,
+        "scrap_weight_kg": scrap_weight,
+        "approach": approach + " This is a simple rectangular nesting estimate; true CNC nesting may improve yield with mixed parts.",
+    }
 
 
 def tube_surface_area_m2(perimeter_mm: float, length_mm: float) -> float:
@@ -215,7 +395,7 @@ def plate_surface_area_m2(length_mm: float, width_mm: float, thickness_mm: float
     return 2 * ((length_mm * width_mm) + (length_mm * thickness_mm) + (width_mm * thickness_mm)) / 1_000_000
 
 
-def square_tube_steps(name: str, outer_mm: float, thickness_mm: float, length_mm: float, weight: float) -> list[CalculationStep]:
+def square_tube_steps(name: str, outer_mm: float, thickness_mm: float, length_mm: float, weight: float, density_kg_per_mm3: float, material_label: str) -> list[CalculationStep]:
     inner = max(outer_mm - (2 * thickness_mm), 0)
     area = (outer_mm * outer_mm) - (inner * inner)
     volume = area * length_mm
@@ -244,14 +424,14 @@ def square_tube_steps(name: str, outer_mm: float, thickness_mm: float, length_mm
         CalculationStep(
             section="Weight",
             name=f"{name} weight",
-            formula="Weight = Volume x SS304 density",
-            substituted_values=f"{round(volume, 3)} x {SS304_DENSITY_KG_PER_MM3} kg/mm3",
+            formula=f"Weight = Volume x {material_label} density",
+            substituted_values=f"{round(volume, 3)} x {density_kg_per_mm3} kg/mm3",
             result=kg(weight),
         ),
     ]
 
 
-def plate_steps(name: str, length_mm: float, width_mm: float, thickness_mm: float, weight: float) -> list[CalculationStep]:
+def plate_steps(name: str, length_mm: float, width_mm: float, thickness_mm: float, weight: float, density_kg_per_mm3: float, material_label: str) -> list[CalculationStep]:
     volume = length_mm * width_mm * thickness_mm
     return [
         CalculationStep(
@@ -264,14 +444,14 @@ def plate_steps(name: str, length_mm: float, width_mm: float, thickness_mm: floa
         CalculationStep(
             section="Weight",
             name=f"{name} weight",
-            formula="Weight = Volume x SS304 density",
-            substituted_values=f"{round(volume, 3)} x {SS304_DENSITY_KG_PER_MM3} kg/mm3",
+            formula=f"Weight = Volume x {material_label} density",
+            substituted_values=f"{round(volume, 3)} x {density_kg_per_mm3} kg/mm3",
             result=kg(weight),
         ),
     ]
 
 
-def round_tube_steps(name: str, od_mm: float, thickness_mm: float, length_mm: float, weight: float) -> list[CalculationStep]:
+def round_tube_steps(name: str, od_mm: float, thickness_mm: float, length_mm: float, weight: float, density_kg_per_mm3: float, material_label: str) -> list[CalculationStep]:
     inner = max(od_mm - (2 * thickness_mm), 0)
     area = math.pi / 4 * ((od_mm * od_mm) - (inner * inner))
     volume = area * length_mm
@@ -293,14 +473,14 @@ def round_tube_steps(name: str, od_mm: float, thickness_mm: float, length_mm: fl
         CalculationStep(
             section="Weight",
             name=f"{name} weight",
-            formula="Weight = Steel area x length x SS304 density",
-            substituted_values=f"{round(area, 3)} x {length_mm} x {SS304_DENSITY_KG_PER_MM3} kg/mm3",
+            formula=f"Weight = Steel area x length x {material_label} density",
+            substituted_values=f"{round(area, 3)} x {length_mm} x {density_kg_per_mm3} kg/mm3",
             result=kg(weight),
         ),
     ]
 
 
-def rod_steps(name: str, diameter_mm: float, length_mm: float, quantity: int, weight: float) -> list[CalculationStep]:
+def rod_steps(name: str, diameter_mm: float, length_mm: float, quantity: int, weight: float, density_kg_per_mm3: float, material_label: str) -> list[CalculationStep]:
     area = math.pi / 4 * diameter_mm * diameter_mm
     volume_each = area * length_mm
     return [
@@ -315,7 +495,7 @@ def rod_steps(name: str, diameter_mm: float, length_mm: float, quantity: int, we
             section="Weight",
             name=f"{name} total weight",
             formula="Weight = area x length x density x quantity",
-            substituted_values=f"{round(area, 3)} x {length_mm} x {SS304_DENSITY_KG_PER_MM3} x {quantity}",
+            substituted_values=f"{round(area, 3)} x {length_mm} x {density_kg_per_mm3} x {quantity} ({material_label})",
             result=kg(weight),
         ),
     ]
@@ -441,7 +621,7 @@ You are extracting manufacturing costing inputs from an engineering drawing imag
 Return only a compact valid JSON object. Do not use markdown. Do not add comments.
 Every property must be separated by a comma. Use double quotes for all JSON keys.
 The JSON object must match these keys:
-part_name,
+part_name, raw_material_type, raw_material_code, component_materials,
 main_material_form, main_profile_shape, main_profile_is_hollow,
 main_profile_length_mm, main_profile_outer_a_mm, main_profile_outer_b_mm,
 main_profile_diameter_mm, main_profile_thickness_mm,
@@ -451,9 +631,18 @@ top_plate_l_mm, top_plate_w_mm, top_plate_t_mm,
 handle_od_mm, handle_thickness_mm, handle_length_mm,
 screw_piece_dia_mm, screw_piece_length_mm, screw_piece_qty,
 chair_angle_weight_per_m, chair_angle_length_mm,
-cutting_length_mm, weld_length_mm, bend_count, confidence, notes.
+cutting_length_mm, cutting_surface_count, weld_length_mm, bend_count, confidence, notes.
 
 Use numbers in millimeters. If a value is not visible, use null and explain in notes.
+Material rule:
+- Detect the raw material from title block, BOM, grade/specification, or item notes.
+- raw_material_type must be one of: ms, ss, aluminium, copper, unknown.
+- raw_material_code should preserve the visible material code, for example C-K201.
+- C-K201/K201/304/316/stainless means stainless steel unless a note says otherwise.
+- MS/IS2062/E250/E350 means mild steel.
+- AL/6061/6082 means aluminium.
+- CU/copper/C11000 means copper.
+- component_materials can list visible item-level material differences as objects with item, material_type, material_code, and note.
 Raw material rule:
 - Identify whether each part is made from rod/bar/profile or blank sheet/plate.
 - Rod/bar/profile supplier standard length is 6000 mm.
@@ -473,6 +662,7 @@ Cutting dimension rule:
 - Rectangular/square blank cutting length = 2 x (L + B).
 - Circular cutting length = pi x diameter.
 - Total cutting length should include profile cut lengths plus visible blank/perimeter cuts.
+- cutting_surface_count is the number of separate cut surfaces/features. For example four holes on faces A/B/C/D means 4 surfaces.
 For cutting_length_mm, estimate from visible tube/profile lengths plus plate perimeters and circular/rectangular cuts.
 For weld_length_mm, estimate from visible weld symbols and joint perimeters.
 Do not invent hidden detail drawing dimensions.
@@ -608,7 +798,10 @@ async def diagram_preview(diagram: UploadFile = File(...)) -> StreamingResponse:
 async def estimate(
     diagram: UploadFile = File(...),
     part_name: str = Form("Pillar Assembly"),
-    material_rate_per_kg: float = Form(RATE_PER_KG),
+    raw_material_type: str = Form("ss"),
+    raw_material_code: str | None = Form(None),
+    component_materials_json: str | None = Form(None),
+    material_rate_per_kg: float | None = Form(None),
     cutting_rate_per_meter: float = Form(RATE_PER_CUT_METER),
     welding_labor_per_meter: float = Form(LABOR_WELDING_PER_METER),
     surface_rate_per_m2: float = Form(RATE_PER_SQ_METER_PAINT),
@@ -631,6 +824,7 @@ async def estimate(
     chair_angle_weight_per_m: float = Form(2.42),
     chair_angle_length_mm: float = Form(620.0),
     cutting_length_mm: float = Form(3869.0),
+    cutting_surface_count: int = Form(0),
     weld_length_mm: float = Form(850.0),
     bend_count: int = Form(2),
     bend_rate_per_stroke: float = Form(RATE_PER_BEND_STROKE),
@@ -641,12 +835,26 @@ async def estimate(
 ) -> EstimateResponse:
     content = await diagram.read()
     model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+    material_type = normalize_material_type(raw_material_type, raw_material_code)
+    details = MATERIALS[material_type]
+    material_label = str(details["label"])
+    density = float(details["density"])
+    default_rate = float(details["default_rate"])
+    active_material_rate = material_rate_per_kg if material_rate_per_kg and material_rate_per_kg > 0 else default_rate
+    component_materials: list[dict] = []
+    if component_materials_json:
+        try:
+            parsed_component_materials = json.loads(component_materials_json)
+            if isinstance(parsed_component_materials, list):
+                component_materials = [item for item in parsed_component_materials if isinstance(item, dict)]
+        except json.JSONDecodeError:
+            component_materials = []
 
-    tube_weight = square_tube_weight(square_tube_outer_mm, square_tube_thickness_mm, square_tube_length_mm)
-    bottom_weight = plate_weight(bottom_plate_l_mm, bottom_plate_w_mm, bottom_plate_t_mm)
-    top_weight = plate_weight(top_plate_l_mm, top_plate_w_mm, top_plate_t_mm)
-    handle_weight = round_tube_weight(handle_od_mm, handle_thickness_mm, handle_length_mm)
-    screw_weight_each = rod_weight(screw_piece_dia_mm, screw_piece_length_mm)
+    tube_weight = square_tube_weight(square_tube_outer_mm, square_tube_thickness_mm, square_tube_length_mm, density)
+    bottom_weight = plate_weight(bottom_plate_l_mm, bottom_plate_w_mm, bottom_plate_t_mm, density)
+    top_weight = plate_weight(top_plate_l_mm, top_plate_w_mm, top_plate_t_mm, density)
+    handle_weight = round_tube_weight(handle_od_mm, handle_thickness_mm, handle_length_mm, density)
+    screw_weight_each = rod_weight(screw_piece_dia_mm, screw_piece_length_mm, density)
     screw_weight = screw_weight_each * screw_piece_qty
     chair_angle_weight_kg = chair_angle_weight_per_m * (chair_angle_length_mm / 1000)
 
@@ -658,12 +866,14 @@ async def estimate(
             square_tube_thickness_mm,
             square_tube_length_mm,
             tube_weight,
+            density,
+            material_label,
         )
     )
-    calculation_steps.extend(plate_steps("Bottom plate", bottom_plate_l_mm, bottom_plate_w_mm, bottom_plate_t_mm, bottom_weight))
-    calculation_steps.extend(plate_steps("Top plate", top_plate_l_mm, top_plate_w_mm, top_plate_t_mm, top_weight))
-    calculation_steps.extend(round_tube_steps("Handle tube", handle_od_mm, handle_thickness_mm, handle_length_mm, handle_weight))
-    calculation_steps.extend(rod_steps("Screwing pieces", screw_piece_dia_mm, screw_piece_length_mm, screw_piece_qty, screw_weight))
+    calculation_steps.extend(plate_steps("Bottom plate", bottom_plate_l_mm, bottom_plate_w_mm, bottom_plate_t_mm, bottom_weight, density, material_label))
+    calculation_steps.extend(plate_steps("Top plate", top_plate_l_mm, top_plate_w_mm, top_plate_t_mm, top_weight, density, material_label))
+    calculation_steps.extend(round_tube_steps("Handle tube", handle_od_mm, handle_thickness_mm, handle_length_mm, handle_weight, density, material_label))
+    calculation_steps.extend(rod_steps("Screwing pieces", screw_piece_dia_mm, screw_piece_length_mm, screw_piece_qty, screw_weight, density, material_label))
     calculation_steps.append(
         CalculationStep(
             section="Weight",
@@ -697,21 +907,21 @@ async def estimate(
             CalculationStep(
                 section="Process",
                 name="Cutting cost",
-                formula="Cutting cost = Total cutting length in meters x cutting rate per meter",
-                substituted_values=f"({cutting_length_mm} / 1000) m x {CURRENCY_UNIT} {cutting_rate_per_meter}/m",
+                formula="Laser cutting cost = Total cutting length in meters x laser cut rate per meter",
+                substituted_values=f"({cutting_length_mm} / 1000) m x {CURRENCY_UNIT} {cutting_rate_per_meter}/m across {cutting_surface_count} cut surfaces",
                 result=money(cutting_cost),
             ),
             CalculationStep(
                 section="Process",
                 name="Bending cost",
-                formula="Bending cost = Number of bend strokes x rate per bend stroke",
+                formula="Bending cost = Number of bends x rate per bend",
                 substituted_values=f"{bend_count} x {CURRENCY_UNIT} {bend_rate_per_stroke}",
                 result=money(bending_cost),
             ),
             CalculationStep(
                 section="Process",
                 name="Welding cost",
-                formula="Welding cost = Total weld length in meters x welding labor per meter",
+                formula="Welding cost = Total weld length in meters x welding rate per meter",
                 substituted_values=f"({weld_length_mm} / 1000) m x {CURRENCY_UNIT} {welding_labor_per_meter}/m",
                 result=money(welding_cost),
             ),
@@ -764,16 +974,75 @@ async def estimate(
     line_items: list[LineItem] = []
     total_weight = 0.0
     total_material_cost = 0.0
+    total_scrap_weight = 0.0
+    total_scrap_value = 0.0
     for name, quantity, weight, weight_step_name in items:
-        material_cost = weight * material_rate_per_kg
+        lower_name = name.lower()
+        item_material_type = material_type
+        item_material_code = raw_material_code
+        for component_material in component_materials:
+            item_name = str(component_material.get("item") or "").lower()
+            if item_name and (item_name in name.lower() or name.lower() in item_name):
+                item_material_type = normalize_material_type(str(component_material.get("material_type") or material_type), str(component_material.get("material_code") or raw_material_code or ""))
+                item_material_code = str(component_material.get("material_code") or raw_material_code or "")
+                break
+        item_details = MATERIALS[item_material_type]
+        item_material_label = str(item_details["label"])
+        item_density = float(item_details["density"])
+        item_material_rate = float(item_details["default_rate"]) if item_material_type != material_type else active_material_rate
+        if item_material_type != material_type:
+            if "square tube" in lower_name:
+                weight = square_tube_weight(square_tube_outer_mm, square_tube_thickness_mm, square_tube_length_mm, item_density)
+            elif "bottom plate" in lower_name:
+                weight = plate_weight(bottom_plate_l_mm, bottom_plate_w_mm, bottom_plate_t_mm, item_density)
+            elif "top plate" in lower_name:
+                weight = plate_weight(top_plate_l_mm, top_plate_w_mm, top_plate_t_mm, item_density)
+            elif "handle" in lower_name:
+                weight = round_tube_weight(handle_od_mm, handle_thickness_mm, handle_length_mm, item_density)
+            elif "screwing" in lower_name:
+                weight = rod_weight(screw_piece_dia_mm, screw_piece_length_mm, item_density) * quantity
+        material_cost = weight * item_material_rate
         total_weight += weight
         total_material_cost += material_cost
+        stock_info = None
+        stock_form = None
+        stock_size = None
+        if "square tube" in lower_name:
+            stock_info = rod_stock_summary(weight, square_tube_length_mm, quantity)
+            stock_form = "rod/profile"
+            stock_size = f"{int(ROD_STOCK_LENGTH_MM)} mm"
+        elif "handle" in lower_name:
+            stock_info = rod_stock_summary(weight, handle_length_mm, quantity)
+            stock_form = "rod/profile"
+            stock_size = f"{int(ROD_STOCK_LENGTH_MM)} mm"
+        elif "screwing" in lower_name:
+            stock_info = rod_stock_summary(weight / max(quantity, 1), screw_piece_length_mm, quantity)
+            stock_form = "rod/profile"
+            stock_size = f"{int(ROD_STOCK_LENGTH_MM)} mm"
+        elif "angle" in lower_name:
+            stock_info = rod_stock_summary(weight, chair_angle_length_mm, quantity)
+            stock_form = "rod/profile"
+            stock_size = f"{int(ROD_STOCK_LENGTH_MM)} mm"
+        elif "top plate" in lower_name:
+            stock_info = sheet_nesting_summary(top_plate_l_mm, top_plate_w_mm, top_plate_t_mm, item_density, quantity)
+            stock_form = "blank sheet"
+            stock_size = f"{int(SHEET_STOCK_LENGTH_MM)} x {int(SHEET_STOCK_WIDTH_MM)} mm"
+        elif "bottom plate" in lower_name:
+            stock_info = sheet_nesting_summary(bottom_plate_l_mm, bottom_plate_w_mm, bottom_plate_t_mm, item_density, quantity)
+            stock_form = "blank sheet"
+            stock_size = f"{int(SHEET_STOCK_LENGTH_MM)} x {int(SHEET_STOCK_WIDTH_MM)} mm"
+
+        scrap_weight = float(stock_info["scrap_weight_kg"]) if stock_info else 0.0
+        scrap_value = scrap_weight * SCRAP_RATE_PER_KG
+        total_scrap_weight += scrap_weight
+        total_scrap_value += scrap_value
+        stock_weight = float(stock_info["stock_weight_kg"]) if stock_info else 0.0
         weight_formula = find_step(calculation_steps, weight_step_name)
         material_formula = CalculationStep(
             section="Cost",
             name=f"{name} material cost",
             formula="Material cost = item weight x material rate",
-            substituted_values=f"{round(weight, 3)} kg x {CURRENCY_UNIT} {material_rate_per_kg}/kg",
+            substituted_values=f"{round(weight, 3)} kg x {CURRENCY_UNIT} {item_material_rate}/kg",
             result=money(material_cost),
         )
         line_items.append(
@@ -784,6 +1053,18 @@ async def estimate(
                 material_cost=round_money(material_cost),
                 process_cost=0,
                 total_cost=round_money(material_cost),
+                material_type=item_material_type,
+                material_label=item_material_label,
+                material_rate_per_kg=item_material_rate,
+                stock_form=stock_form,
+                stock_size=stock_size,
+                parts_per_stock=int(stock_info["parts_per_stock"]) if stock_info else None,
+                stock_weight_kg=round(stock_weight, 3) if stock_info else None,
+                gross_stock_cost=round_money(stock_weight * item_material_rate) if stock_info else None,
+                scrap_weight_kg=round(scrap_weight, 3),
+                scrap_value=round_money(scrap_value),
+                net_stock_cost_per_part=round_money(((stock_weight * item_material_rate) - scrap_value) / max(int(stock_info["parts_per_stock"]), 1)) if stock_info else None,
+                nesting_approach=str(stock_info["approach"]) if stock_info else None,
                 formulas={
                     "weight": weight_formula,
                     "material": material_formula,
@@ -799,8 +1080,15 @@ async def estimate(
                 section="Cost",
                 name="Material cost",
                 formula="Material cost = Total calculated weight x material rate",
-                substituted_values=f"{round(total_weight, 3)} kg x {CURRENCY_UNIT} {material_rate_per_kg}/kg",
+                substituted_values=f"{round(total_weight, 3)} kg x {CURRENCY_UNIT} {active_material_rate}/kg",
                 result=money(total_material_cost),
+            ),
+            CalculationStep(
+                section="Stock",
+                name="Scrap value",
+                formula="Scrap value = Scrap weight x scrap rate",
+                substituted_values=f"{round(total_scrap_weight, 3)} kg x {CURRENCY_UNIT} {SCRAP_RATE_PER_KG}/kg",
+                result=money(total_scrap_value),
             ),
             CalculationStep(
                 section="Cost",
@@ -822,12 +1110,29 @@ async def estimate(
         total_process_cost=round_money(total_process_cost),
         surface_treatment_cost=round_money(surface_cost),
         total_estimated_cost=round_money(total),
+        material_summary=MaterialSummary(
+            material_type=material_type,
+            material_label=material_label,
+            material_code=raw_material_code,
+            density_kg_per_mm3=density,
+            rate_per_kg=active_material_rate,
+            default_rate_per_kg=default_rate,
+            source="extracted/raw-material-code" if raw_material_code else "user/default",
+        ),
+        stock_summary=StockSummary(
+            total_scrap_weight_kg=round(total_scrap_weight, 3),
+            total_scrap_value=round_money(total_scrap_value),
+            approach="Rod/profile items use 6000 mm linear nesting. Plate/sheet items use 2500 x 1250 mm two-orientation rectangular grid nesting. Mixed-shape CNC nesting is still an estimate and should be checked by the vendor.",
+        ),
         assumptions=[
             f"Dimension extraction is handled by Gemini API with {model}; this costing step uses the submitted field values.",
-            "Default values are based on LS10255 Pillar Assembly notes shared with the request.",
-            "Standard raw material nesting, scrap recovery, tax, packaging, transport, and supplier MOQ are not included.",
+            f"Material is treated as {material_label} ({raw_material_code or material_type}) at {CURRENCY_UNIT} {active_material_rate}/kg; this can be overridden from UI.",
+            f"Default material rates: MS {RATE_MS_PER_KG}/kg, SS {RATE_SS_PER_KG}/kg, aluminium {RATE_ALUMINIUM_PER_KG}/kg, copper {RATE_COPPER_PER_KG}/kg.",
+            f"Default stock sizes: rod/profile {ROD_STOCK_LENGTH_MM:.0f} mm and sheet/plate {SHEET_STOCK_LENGTH_MM:.0f} x {SHEET_STOCK_WIDTH_MM:.0f} mm.",
+            f"Scrap/offcut value is estimated at {CURRENCY_UNIT} {SCRAP_RATE_PER_KG}/kg.",
+            "Tax, packaging, transport, and supplier MOQ are not included.",
             "Chair angle weight uses kg/m x length because the detailed LS10269 geometry is not present in the upload.",
-            f"Process cost includes cutting ({cutting_length_mm} mm), bending ({bend_count} strokes), welding ({weld_length_mm} mm), press hits ({press_machine_hits}), and optional tacking labor.",
+            f"Process cost includes laser cutting ({cutting_length_mm} mm across {cutting_surface_count} surfaces), bending ({bend_count} bends), welding ({weld_length_mm} mm), press hits ({press_machine_hits}), painting, and optional tacking labor.",
         ],
         items=line_items,
         process_breakdown=ProcessBreakdown(
@@ -835,8 +1140,10 @@ async def estimate(
             bending_cost=round_money(bending_cost),
             welding_cost=round_money(welding_cost),
             press_machine_cost=round_money(press_machine_cost),
+            painting_cost=round_money(surface_cost),
             tacking_cost=round_money(tacking_cost),
             cutting_length_mm=cutting_length_mm,
+            cutting_surface_count=cutting_surface_count,
             bend_count=bend_count,
             weld_length_mm=weld_length_mm,
             press_machine_hits=press_machine_hits,
