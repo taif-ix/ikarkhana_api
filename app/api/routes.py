@@ -5,6 +5,7 @@ import os
 
 from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from app.core.config import (
     LABOR_TACKING_FIXED,
@@ -23,6 +24,18 @@ from app.services.vision import extract_dimensions_with_gemini, extract_structur
 router = APIRouter()
 
 
+class StructuredCostRequest(BaseModel):
+    extraction: StructuredExtraction
+    material_rate_per_kg: float | None = RATE_PER_KG
+    laser_cutting_rate_per_meter: float = RATE_PER_CUT_METER
+    press_machine_rate_per_hit: float = RATE_PER_PRESS_MACHINE_HIT
+    bend_rate_per_bend: float = RATE_PER_BEND_STROKE
+    welding_labor_per_meter: float = LABOR_WELDING_PER_METER
+    painting_rate_per_m2: float = RATE_PER_SQ_METER_PAINT
+    scrap_rate_per_kg: float = 28.0
+    tacking_fixed_setup_cost: float = LABOR_TACKING_FIXED
+
+
 @router.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -35,7 +48,7 @@ def api_root() -> dict[str, object]:
         "status": "ok",
         "frontend_repo": "https://github.com/taif-ix/ikarkhana_web",
         "docs": "/docs",
-        "endpoints": ["/health", "/gemini-config", "/diagram-preview", "/extract-dimensions", "/extract-structured", "/extract-cost-breakdown", "/estimate"],
+        "endpoints": ["/health", "/gemini-config", "/diagram-preview", "/extract-dimensions", "/extract-structured", "/extract-cost-breakdown", "/calculate-cost-breakdown", "/estimate"],
     }
 
 
@@ -82,6 +95,7 @@ async def extract_cost_breakdown(
     bend_rate_per_bend: float = Form(RATE_PER_BEND_STROKE),
     welding_labor_per_meter: float = Form(LABOR_WELDING_PER_METER),
     painting_rate_per_m2: float = Form(RATE_PER_SQ_METER_PAINT),
+    scrap_rate_per_kg: float = Form(28.0),
     tacking_fixed_setup_cost: float = Form(LABOR_TACKING_FIXED),
 ) -> StructuredCostBreakdown:
     content = await diagram.read()
@@ -94,7 +108,23 @@ async def extract_cost_breakdown(
         bend_rate_per_bend=bend_rate_per_bend,
         welding_labor_per_meter=welding_labor_per_meter,
         painting_rate_per_m2=painting_rate_per_m2,
+        scrap_rate_per_kg=scrap_rate_per_kg,
         tacking_fixed_setup_cost=tacking_fixed_setup_cost,
+    )
+
+
+@router.post("/calculate-cost-breakdown", response_model=StructuredCostBreakdown, response_model_exclude_none=True)
+async def calculate_cost_breakdown(request: StructuredCostRequest) -> StructuredCostBreakdown:
+    return calculate_structured_cost_breakdown(
+        request.extraction,
+        material_rate_per_kg=request.material_rate_per_kg,
+        laser_cutting_rate_per_meter=request.laser_cutting_rate_per_meter,
+        press_machine_rate_per_hit=request.press_machine_rate_per_hit,
+        bend_rate_per_bend=request.bend_rate_per_bend,
+        welding_labor_per_meter=request.welding_labor_per_meter,
+        painting_rate_per_m2=request.painting_rate_per_m2,
+        scrap_rate_per_kg=request.scrap_rate_per_kg,
+        tacking_fixed_setup_cost=request.tacking_fixed_setup_cost,
     )
 
 
@@ -141,6 +171,7 @@ async def estimate(
     bend_rate_per_stroke: float = Form(RATE_PER_BEND_STROKE),
     press_machine_hits: int = Form(0),
     press_machine_rate_per_hit: float = Form(RATE_PER_PRESS_MACHINE_HIT),
+    scrap_rate_per_kg: float = Form(28.0),
     include_tacking_labor: bool = Form(False),
     tacking_labor_fixed: float = Form(LABOR_TACKING_FIXED),
 ) -> EstimateResponse:
@@ -181,6 +212,7 @@ async def estimate(
         bend_rate_per_stroke=bend_rate_per_stroke,
         press_machine_hits=press_machine_hits,
         press_machine_rate_per_hit=press_machine_rate_per_hit,
+        scrap_rate_per_kg=scrap_rate_per_kg,
         include_tacking_labor=include_tacking_labor,
         tacking_labor_fixed=tacking_labor_fixed,
     )

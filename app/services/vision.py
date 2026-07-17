@@ -98,6 +98,13 @@ Return this exact top-level shape:
         "secondary_width_mm": number or null,
         "thickness_or_wall_thickness_mm": number or null
       },
+      "image_region": {
+        "x_min": number or null,
+        "y_min": number or null,
+        "x_max": number or null,
+        "y_max": number or null,
+        "source": string
+      },
       "bends_per_part": number,
       "cutting_metrics": {
         "laser_cutting_length_mm": number,
@@ -126,6 +133,11 @@ Extraction rules:
 - For round tube Dia 19x2, width_or_outer_dia_mm is 19 and thickness is 2.
 - For a rectangular/square sheet or plate, length and width go into length_mm and width_or_outer_dia_mm; thickness goes into thickness_or_wall_thickness_mm.
 - For a rod/bar/accessory, length goes into length_mm and diameter/outer size goes into width_or_outer_dia_mm.
+- image_region is the approximate visible drawing/detail region for that specific part, not the whole page.
+- image_region coordinates must be normalized from 0 to 1000 relative to the full drawing image: x_min/y_min is top-left, x_max/y_max is bottom-right.
+- Use only the actual drawing/detail geometry region for image_region. Never use the BOM/table row, title block, material table, or text-only row as image_region.
+- If only the BOM row identifies the part and no specific drawing/detail geometry can be verified, set all image_region coordinates to null and source to "NULL - Insufficient Data".
+- If the specific part location cannot be verified, set all image_region coordinates to null and source to "NULL - Insufficient Data".
 - Detect bends per part from bend/fold/formed angle/tube bend indications.
 - laser_cutting_length_mm is the perimeter/profile cut length visible for that part. Rectangular perimeter = 2 x (L + W). Circular cut = pi x diameter.
 - press_machine_hits_count is number of punched/pressed cut surfaces/features if visible. If unclear, use 0 and explain in notes.

@@ -173,6 +173,14 @@ class NestingLayoutHint(BaseModel):
     recommended_grain_or_cut_direction: str = "NA"
 
 
+class PartImageRegion(BaseModel):
+    x_min: float | None = None
+    y_min: float | None = None
+    x_max: float | None = None
+    y_max: float | None = None
+    source: str = "NULL - Insufficient Data"
+
+
 class ExtractedCostPart(BaseModel):
     part_number: str
     component_name: str | None = None
@@ -182,6 +190,7 @@ class ExtractedCostPart(BaseModel):
     material_code: str | None = None
     per_set_qty: int = 1
     dimensions: ExtractedPartDimensions = Field(default_factory=ExtractedPartDimensions)
+    image_region: PartImageRegion = Field(default_factory=PartImageRegion)
     bends_per_part: int = 0
     cutting_metrics: ExtractedCuttingMetrics = Field(default_factory=ExtractedCuttingMetrics)
     nesting_layout_hint: NestingLayoutHint = Field(default_factory=NestingLayoutHint)
