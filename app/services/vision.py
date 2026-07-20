@@ -121,12 +121,25 @@ Return this exact top-level shape:
     "total_assembly_welding_length_mm": number,
     "notes": []
   },
+  "referenced_drawings": [
+    {
+      "drawing_number": string,
+      "file_name_hint": string or null,
+      "referenced_by_part_number": string or null,
+      "referenced_by_component": string or null,
+      "reason": string,
+      "required_for_costing": true
+    }
+  ],
   "confidence": number,
   "notes": []
 }
 
 Extraction rules:
 - Extract all visible BOM/detail-table parts, not just the main tube.
+- Detect child/detail drawing references from BOM/detail drawing columns, notes, remarks, or callouts. Example: if CHAIR ANGLE-RH references LS10269, add it to referenced_drawings with drawing_number "LS10269", file_name_hint "LS10269.tif", referenced_by_component "CHAIR ANGLE-RH", and reason explaining which dimensions/features may be missing.
+- Do not add the current drawing number itself to referenced_drawings.
+- If a referenced child drawing is needed to verify missing geometry, bend count, cut length, holes, or weight, required_for_costing must be true.
 - Do not calculate costs, weights, scrap, or painting. Backend will calculate those.
 - Use null where dimensions are not visible.
 - For square tube 45x45x4, component_type is tube, tube_type is "Square 45x45x4", width_or_outer_dia_mm is 45, secondary_width_mm is 45, thickness is 4.
@@ -280,7 +293,12 @@ def extract_dimensions_with_gemini(content: bytes, content_type: str | None) -> 
     return extracted
 
 
-def _gemini_generate_json(content: bytes, content_type: str | None, prompt: str) -> dict:
+def _gemini_generate_json(
+    content: bytes,
+    content_type: str | None,
+    prompt: str,
+    child_drawings: list[tuple[str, bytes, str | None]] | None = None,
+) -> dict:
     provider = os.getenv("GEMINI_PROVIDER", "gemini_api").lower()
     api_key = os.getenv("GEMINI_API_KEY")
     project = os.getenv("GOOGLE_CLOUD_PROJECT")
@@ -304,11 +322,24 @@ def _gemini_generate_json(content: bytes, content_type: str | None, prompt: str)
 
     image_content, mime_type = image_bytes_for_gemini(content, content_type)
     client = genai.Client(vertexai=True, project=project, location=location) if provider == "vertex_ai" else genai.Client(api_key=api_key)
+    contents: list[object] = [
+        "Main uploaded engineering drawing:",
+        types.Part.from_bytes(data=image_content, mime_type=mime_type),
+    ]
+    for filename, child_content, child_content_type in child_drawings or []:
+        child_image_content, child_mime_type = image_bytes_for_gemini(child_content, child_content_type)
+        contents.extend(
+            [
+                f"Referenced child/detail drawing file: {filename}",
+                types.Part.from_bytes(data=child_image_content, mime_type=child_mime_type),
+            ]
+        )
+    contents.append(prompt)
 
     try:
         response = client.models.generate_content(
             model=model,
-            contents=[types.Part.from_bytes(data=image_content, mime_type=mime_type), prompt],
+            contents=contents,
             config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json"),
         )
     except Exception as exc:
@@ -328,8 +359,14 @@ def _gemini_generate_json(content: bytes, content_type: str | None, prompt: str)
     return clean_json_response(response.text)
 
 
-def extract_structured_with_gemini(content: bytes, content_type: str | None) -> StructuredExtraction:
+def extract_structured_with_gemini(
+    content: bytes,
+    content_type: str | None,
+    child_drawings: list[tuple[str, bytes, str | None]] | None = None,
+) -> StructuredExtraction:
     try:
-        return StructuredExtraction.model_validate(_gemini_generate_json(content, content_type, STRUCTURED_EXTRACTION_PROMPT))
+        return StructuredExtraction.model_validate(
+            _gemini_generate_json(content, content_type, STRUCTURED_EXTRACTION_PROMPT, child_drawings)
+        )
     except (json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(status_code=502, detail=f"Gemini returned a response that could not be parsed as structured extraction JSON: {exc}") from exc

@@ -33,6 +33,7 @@ from app.models.schemas import (
 )
 from app.services.formulas import (
     find_step,
+    fmt_number,
     kg,
     money,
     normalize_material_type,
@@ -126,7 +127,7 @@ def _surface_area_step_text(
         total_perimeter = perimeter + inner_perimeter
         return (
             "Hollow round tube painted area (m2) = (outside circumference + inside circumference) x length / 1,000,000 mm2 per m2",
-            f"(pi x {width_or_dia_mm} mm + pi x {inner_dia} mm) = {round(total_perimeter, 3)} mm perimeter; {round(total_perimeter, 3)} mm x {length_mm} mm = {round(total_perimeter * length_mm, 3)} mm2; / 1,000,000 = {round(total_perimeter * length_mm / 1_000_000, 4)} m2",
+            f"(pi x {fmt_number(width_or_dia_mm)} mm + pi x {fmt_number(inner_dia)} mm) = {fmt_number(total_perimeter)} mm perimeter; {fmt_number(total_perimeter)} mm x {fmt_number(length_mm)} mm = {fmt_number(total_perimeter * length_mm)} mm2; / 1,000,000 = {fmt_number(total_perimeter * length_mm / 1_000_000, 4)} m2",
         )
     if component == "tube":
         outer_b = secondary_width_mm or width_or_dia_mm
@@ -137,25 +138,25 @@ def _surface_area_step_text(
         total_perimeter = perimeter + inner_perimeter
         return (
             "Hollow square/rectangular tube painted area (m2) = (outside perimeter + inside perimeter) x length / 1,000,000 mm2 per m2",
-            f"outside perimeter = 2 x ({width_or_dia_mm} mm + {outer_b} mm) = {round(perimeter, 3)} mm; inside perimeter = 2 x ({inner_a} mm + {inner_b} mm) = {round(inner_perimeter, 3)} mm; total {round(total_perimeter, 3)} mm x {length_mm} mm = {round(total_perimeter * length_mm, 3)} mm2; / 1,000,000 = {round(total_perimeter * length_mm / 1_000_000, 4)} m2",
+            f"outside perimeter = 2 x ({fmt_number(width_or_dia_mm)} mm + {fmt_number(outer_b)} mm) = {fmt_number(perimeter)} mm; inside perimeter = 2 x ({fmt_number(inner_a)} mm + {fmt_number(inner_b)} mm) = {fmt_number(inner_perimeter)} mm; total {fmt_number(total_perimeter)} mm x {fmt_number(length_mm)} mm = {fmt_number(total_perimeter * length_mm)} mm2; / 1,000,000 = {fmt_number(total_perimeter * length_mm / 1_000_000, 4)} m2",
         )
     if component in {"sheet", "plate"}:
         surface = 2 * ((length_mm * width_or_dia_mm) + (length_mm * thickness_mm) + (width_or_dia_mm * thickness_mm)) / 1_000_000
         return (
             "Plate surface area (m2) = 2 x ((L x W) + (L x T) + (W x T)) in mm2 / 1,000,000 mm2 per m2",
-            f"2 x (({length_mm} mm x {width_or_dia_mm} mm) + ({length_mm} mm x {thickness_mm} mm) + ({width_or_dia_mm} mm x {thickness_mm} mm)) = {round(surface * 1_000_000, 3)} mm2; / 1,000,000 = {round(surface, 4)} m2",
+            f"2 x (({fmt_number(length_mm)} mm x {fmt_number(width_or_dia_mm)} mm) + ({fmt_number(length_mm)} mm x {fmt_number(thickness_mm)} mm) + ({fmt_number(width_or_dia_mm)} mm x {fmt_number(thickness_mm)} mm)) = {fmt_number(surface * 1_000_000)} mm2; / 1,000,000 = {fmt_number(surface, 4)} m2",
         )
     if component in {"rod", "accessory"}:
         radius = width_or_dia_mm / 2
         surface = ((2 * math.pi * radius * length_mm) + (2 * math.pi * radius * radius)) / 1_000_000
         return (
             "Solid round rod surface area (m2) = curved area (mm2) + two end faces (mm2), then / 1,000,000 mm2 per m2",
-            f"((2 x pi x {radius} mm x {length_mm} mm) + (2 x pi x {radius} mm x {radius} mm)) = {round(surface * 1_000_000, 3)} mm2; / 1,000,000 = {round(surface, 4)} m2",
+            f"((2 x pi x {fmt_number(radius)} mm x {fmt_number(length_mm)} mm) + (2 x pi x {fmt_number(radius)} mm x {fmt_number(radius)} mm)) = {fmt_number(surface * 1_000_000)} mm2; / 1,000,000 = {fmt_number(surface, 4)} m2",
         )
     surface = 2 * ((length_mm * width_or_dia_mm) + (length_mm * thickness_mm) + (width_or_dia_mm * thickness_mm)) / 1_000_000
     return (
         "Surface area (m2) = 2 x ((L x W) + (L x T) + (W x T)) in mm2 / 1,000,000 mm2 per m2",
-        f"2 x (({length_mm} mm x {width_or_dia_mm} mm) + ({length_mm} mm x {thickness_mm} mm) + ({width_or_dia_mm} mm x {thickness_mm} mm)) = {round(surface * 1_000_000, 3)} mm2; / 1,000,000 = {round(surface, 4)} m2",
+        f"2 x (({fmt_number(length_mm)} mm x {fmt_number(width_or_dia_mm)} mm) + ({fmt_number(length_mm)} mm x {fmt_number(thickness_mm)} mm) + ({fmt_number(width_or_dia_mm)} mm x {fmt_number(thickness_mm)} mm)) = {fmt_number(surface * 1_000_000)} mm2; / 1,000,000 = {fmt_number(surface, 4)} m2",
     )
 
 
@@ -176,7 +177,7 @@ def _weight_step_text(
         volume = steel_area * length_mm
         return (
             "Net weight (kg) = steel cross-section area (mm2) x length (mm) x material density (kg/mm3)",
-            f"area = pi/4 x ({width_or_dia_mm}^2 - {inner_dia}^2) = {round(steel_area, 3)} mm2; volume = {round(steel_area, 3)} mm2 x {length_mm} mm = {round(volume, 3)} mm3; weight = {round(volume, 3)} mm3 x {density} kg/mm3",
+            f"area = pi/4 x ({fmt_number(width_or_dia_mm)}^2 - {fmt_number(inner_dia)}^2) = {fmt_number(steel_area)} mm2; volume = {fmt_number(steel_area)} mm2 x {fmt_number(length_mm)} mm = {fmt_number(volume)} mm3; weight = {fmt_number(volume)} mm3 x {density} kg/mm3",
         )
     if component == "tube":
         outer_b = secondary_width_mm or width_or_dia_mm
@@ -186,25 +187,25 @@ def _weight_step_text(
         volume = steel_area * length_mm
         return (
             "Net weight (kg) = hollow tube steel area (mm2) x length (mm) x material density (kg/mm3)",
-            f"area = ({width_or_dia_mm} mm x {outer_b} mm) - ({inner_a} mm x {inner_b} mm) = {round(steel_area, 3)} mm2; volume = {round(steel_area, 3)} mm2 x {length_mm} mm = {round(volume, 3)} mm3; weight = {round(volume, 3)} mm3 x {density} kg/mm3",
+            f"area = ({fmt_number(width_or_dia_mm)} mm x {fmt_number(outer_b)} mm) - ({fmt_number(inner_a)} mm x {fmt_number(inner_b)} mm) = {fmt_number(steel_area)} mm2; volume = {fmt_number(steel_area)} mm2 x {fmt_number(length_mm)} mm = {fmt_number(volume)} mm3; weight = {fmt_number(volume)} mm3 x {density} kg/mm3",
         )
     if component in {"sheet", "plate"}:
         volume = length_mm * width_or_dia_mm * thickness_mm
         return (
             "Net weight (kg) = volume (mm3) x material density (kg/mm3)",
-            f"volume = {length_mm} mm x {width_or_dia_mm} mm x {thickness_mm} mm = {round(volume, 3)} mm3; weight = {round(volume, 3)} mm3 x {density} kg/mm3",
+            f"volume = {fmt_number(length_mm)} mm x {fmt_number(width_or_dia_mm)} mm x {fmt_number(thickness_mm)} mm = {fmt_number(volume)} mm3; weight = {fmt_number(volume)} mm3 x {density} kg/mm3",
         )
     if component in {"rod", "accessory"}:
         steel_area = math.pi / 4 * width_or_dia_mm * width_or_dia_mm
         volume = steel_area * length_mm
         return (
             "Net weight (kg) = solid round area (mm2) x length (mm) x material density (kg/mm3)",
-            f"area = pi/4 x {width_or_dia_mm}^2 = {round(steel_area, 3)} mm2; volume = {round(steel_area, 3)} mm2 x {length_mm} mm = {round(volume, 3)} mm3; weight = {round(volume, 3)} mm3 x {density} kg/mm3",
+            f"area = pi/4 x {fmt_number(width_or_dia_mm)}^2 = {fmt_number(steel_area)} mm2; volume = {fmt_number(steel_area)} mm2 x {fmt_number(length_mm)} mm = {fmt_number(volume)} mm3; weight = {fmt_number(volume)} mm3 x {density} kg/mm3",
         )
     volume = length_mm * width_or_dia_mm * thickness_mm
     return (
         "Net weight (kg) = volume (mm3) x material density (kg/mm3)",
-        f"volume = {length_mm} mm x {width_or_dia_mm} mm x {thickness_mm} mm = {round(volume, 3)} mm3; weight = {round(volume, 3)} mm3 x {density} kg/mm3",
+        f"volume = {fmt_number(length_mm)} mm x {fmt_number(width_or_dia_mm)} mm x {fmt_number(thickness_mm)} mm = {fmt_number(volume)} mm3; weight = {fmt_number(volume)} mm3 x {density} kg/mm3",
     )
 
 
@@ -302,42 +303,42 @@ def calculate_structured_cost_breakdown(
                 section="Cost",
                 name=f"Part {part.part_number} material cost",
                 formula="Net material cost (INR) = gross raw material cost (INR) - scrap resale value (INR)",
-                substituted_values=f"({round(gross_weight, 3)} kg x {CURRENCY_UNIT} {rate}/kg) - ({round(scrap_weight, 3)} kg scrap x {CURRENCY_UNIT} {scrap_rate_per_kg}/kg) = {money(gross_material_cost)} - {money(scrap_value)}",
+                substituted_values=f"({fmt_number(gross_weight)} kg x {CURRENCY_UNIT} {fmt_number(rate, 2)}/kg) - ({fmt_number(scrap_weight)} kg scrap x {CURRENCY_UNIT} {fmt_number(scrap_rate_per_kg, 2)}/kg) = {money(gross_material_cost)} - {money(scrap_value)}",
                 result=money(material_cost),
             ),
             CalculationStep(
                 section="Stock",
                 name=f"Part {part.part_number} scrap resale value",
                 formula="Scrap resale value (INR) = scrap weight (kg) x scrap rate (INR/kg)",
-                substituted_values=f"{round(scrap_weight, 3)} kg x {CURRENCY_UNIT} {scrap_rate_per_kg}/kg",
+                substituted_values=f"{fmt_number(scrap_weight)} kg x {CURRENCY_UNIT} {fmt_number(scrap_rate_per_kg, 2)}/kg",
                 result=money(scrap_value),
             ),
             CalculationStep(
                 section="Process",
                 name=f"Part {part.part_number} laser cutting cost",
                 formula="Laser cutting cost (INR) = laser cutting length (m) x laser cut rate (INR/m)",
-                substituted_values=f"{laser_length_mm} mm / 1000 = {round(laser_length_mm / 1000, 3)} m; {round(laser_length_mm / 1000, 3)} m x {CURRENCY_UNIT} {laser_cutting_rate_per_meter}/m",
+                substituted_values=f"{fmt_number(laser_length_mm)} mm / 1000 = {fmt_number(laser_length_mm / 1000)} m; {fmt_number(laser_length_mm / 1000)} m x {CURRENCY_UNIT} {fmt_number(laser_cutting_rate_per_meter, 2)}/m",
                 result=money(laser_cutting_cost),
             ),
             CalculationStep(
                 section="Process",
                 name=f"Part {part.part_number} press cutting cost",
                 formula="Press / punching cost (INR) = press hit count (hits) x press cut rate (INR/hit)",
-                substituted_values=f"{press_hits} hits x {CURRENCY_UNIT} {press_machine_rate_per_hit}/hit",
+                substituted_values=f"{press_hits} hits x {CURRENCY_UNIT} {fmt_number(press_machine_rate_per_hit, 2)}/hit",
                 result=money(machine_punching_cost),
             ),
             CalculationStep(
                 section="Process",
                 name=f"Part {part.part_number} bending cost",
                 formula="Bending cost (INR) = bend count (bends) x bend rate (INR/bend)",
-                substituted_values=f"{bends} bends x {CURRENCY_UNIT} {bend_rate_per_bend}/bend",
+                substituted_values=f"{bends} bends x {CURRENCY_UNIT} {fmt_number(bend_rate_per_bend, 2)}/bend",
                 result=money(bending_cost),
             ),
             CalculationStep(
                 section="Surface",
                 name=f"Part {part.part_number} painting cost",
                 formula="Painting cost (INR) = surface area (m2) x painting rate (INR/m2)",
-                substituted_values=f"{round(surface_area, 4)} m2 x {CURRENCY_UNIT} {painting_rate_per_m2}/m2",
+                substituted_values=f"{fmt_number(surface_area, 4)} m2 x {CURRENCY_UNIT} {fmt_number(painting_rate_per_m2, 2)}/m2",
                 result=money(painting_cost),
             ),
             CalculationStep(
@@ -395,6 +396,7 @@ def calculate_structured_cost_breakdown(
     return StructuredCostBreakdown(
         currency=extraction.currency or "INR",
         part_name=extraction.part_name,
+        referenced_drawings=extraction.referenced_drawings,
         per_part_breakdown=costed_parts,
         assembly_level_fabrication=AssemblyLevelFabrication(
             total_assembly_welding_length_mm=round(welding_length, 2),
@@ -490,7 +492,7 @@ def calculate_estimate(
     calculation_steps.extend(plate_steps("Top plate", top_plate_l_mm, top_plate_w_mm, top_plate_t_mm, top_weight, density, material_label))
     calculation_steps.extend(round_tube_steps("Handle tube", handle_od_mm, handle_thickness_mm, handle_length_mm, handle_weight, density, material_label))
     calculation_steps.extend(rod_steps("Screwing pieces", screw_piece_dia_mm, screw_piece_length_mm, screw_piece_qty, screw_weight, density, material_label))
-    calculation_steps.append(CalculationStep(section="Weight", name="Chair angle / bracket weight", formula="Weight = section weight per meter x length in meter", substituted_values=f"{chair_angle_weight_per_m} kg/m x ({chair_angle_length_mm} / 1000)", result=kg(chair_angle_weight_kg)))
+    calculation_steps.append(CalculationStep(section="Weight", name="Chair angle / bracket weight", formula="Weight = section weight per meter x length in meter", substituted_values=f"{fmt_number(chair_angle_weight_per_m)} kg/m x ({fmt_number(chair_angle_length_mm)} / 1000)", result=kg(chair_angle_weight_kg)))
 
     items = [
         ("Square tube 45x45x4", 1, tube_weight, "Square tube weight"),
@@ -512,10 +514,10 @@ def calculate_estimate(
 
     calculation_steps.extend(
         [
-            CalculationStep(section="Process", name="Cutting cost", formula="Laser cutting cost = Total cutting length in meters x laser cut rate per meter", substituted_values=f"({cutting_length_mm} / 1000) m x {CURRENCY_UNIT} {cutting_rate_per_meter}/m across {cutting_surface_count} cut surfaces", result=money(cutting_cost)),
-            CalculationStep(section="Process", name="Bending cost", formula="Bending cost = Number of bends x rate per bend", substituted_values=f"{bend_count} x {CURRENCY_UNIT} {bend_rate_per_stroke}", result=money(bending_cost)),
-            CalculationStep(section="Process", name="Welding cost", formula="Welding cost = Total weld length in meters x welding rate per meter", substituted_values=f"({weld_length_mm} / 1000) m x {CURRENCY_UNIT} {welding_labor_per_meter}/m", result=money(welding_cost)),
-            CalculationStep(section="Process", name="Press machine cost", formula="Press machine cost = Number of machine hits x rate per hit", substituted_values=f"{press_machine_hits} x {CURRENCY_UNIT} {press_machine_rate_per_hit}", result=money(press_machine_cost)),
+            CalculationStep(section="Process", name="Cutting cost", formula="Laser cutting cost = Total cutting length in meters x laser cut rate per meter", substituted_values=f"({fmt_number(cutting_length_mm)} / 1000) m x {CURRENCY_UNIT} {fmt_number(cutting_rate_per_meter, 2)}/m across {cutting_surface_count} cut surfaces", result=money(cutting_cost)),
+            CalculationStep(section="Process", name="Bending cost", formula="Bending cost = Number of bends x rate per bend", substituted_values=f"{bend_count} x {CURRENCY_UNIT} {fmt_number(bend_rate_per_stroke, 2)}", result=money(bending_cost)),
+            CalculationStep(section="Process", name="Welding cost", formula="Welding cost = Total weld length in meters x welding rate per meter", substituted_values=f"({fmt_number(weld_length_mm)} / 1000) m x {CURRENCY_UNIT} {fmt_number(welding_labor_per_meter, 2)}/m", result=money(welding_cost)),
+            CalculationStep(section="Process", name="Press machine cost", formula="Press machine cost = Number of machine hits x rate per hit", substituted_values=f"{press_machine_hits} x {CURRENCY_UNIT} {fmt_number(press_machine_rate_per_hit, 2)}", result=money(press_machine_cost)),
             CalculationStep(section="Process", name="Tacking labor", formula="Tacking labor = fixed tacking labor when included", substituted_values=f"{'included' if include_tacking_labor else 'not included'}; fixed = {CURRENCY_UNIT} {tacking_labor_fixed}", result=money(tacking_cost)),
         ]
     )
@@ -531,8 +533,8 @@ def calculate_estimate(
     surface_cost = 0.0 if surface_type == "none" else surface_area * surface_rate_per_m2
     calculation_steps.extend(
         [
-            CalculationStep(section="Surface", name="Surface area", formula="Surface area = tube inner+outer perimeter x length + plate exposed areas + handle inner+outer perimeter x length", substituted_values=f"((4 x {square_tube_outer_mm} + 4 x {square_tube_inner_mm}) x {square_tube_length_mm}) + plate areas + ((pi x {handle_od_mm} + pi x {handle_inner_od_mm}) x {handle_length_mm}); all mm2 divided by 1,000,000 to get m2", result=f"{round(surface_area, 4)} m2"),
-            CalculationStep(section="Surface", name="Surface treatment cost", formula="Surface treatment cost = Surface area x surface treatment rate", substituted_values=f"{round(surface_area, 4)} m2 x {CURRENCY_UNIT} {surface_rate_per_m2}/m2", result=money(surface_cost)),
+            CalculationStep(section="Surface", name="Surface area", formula="Surface area = tube inner+outer perimeter x length + plate exposed areas + handle inner+outer perimeter x length", substituted_values=f"((4 x {fmt_number(square_tube_outer_mm)} + 4 x {fmt_number(square_tube_inner_mm)}) x {fmt_number(square_tube_length_mm)}) + plate areas + ((pi x {fmt_number(handle_od_mm)} + pi x {fmt_number(handle_inner_od_mm)}) x {fmt_number(handle_length_mm)}); all mm2 divided by 1,000,000 to get m2", result=f"{fmt_number(surface_area, 4)} m2"),
+            CalculationStep(section="Surface", name="Surface treatment cost", formula="Surface treatment cost = Surface area x surface treatment rate", substituted_values=f"{fmt_number(surface_area, 4)} m2 x {CURRENCY_UNIT} {fmt_number(surface_rate_per_m2, 2)}/m2", result=money(surface_cost)),
         ]
     )
 
@@ -633,7 +635,7 @@ def calculate_estimate(
     calculation_steps.extend(
         [
             CalculationStep(section="Cost", name="Material cost", formula="Net material cost = sum of allocated stock material costs after scrap resale deduction", substituted_values=f"sum(line item allocated gross stock costs) - {money(total_scrap_value)} scrap resale", result=money(total_material_cost)),
-            CalculationStep(section="Stock", name="Scrap value", formula="Scrap value = Scrap weight x scrap rate", substituted_values=f"{round(total_scrap_weight, 3)} kg x {CURRENCY_UNIT} {scrap_rate_per_kg}/kg", result=money(total_scrap_value)),
+            CalculationStep(section="Stock", name="Scrap value", formula="Scrap value = Scrap weight x scrap rate", substituted_values=f"{fmt_number(total_scrap_weight)} kg x {CURRENCY_UNIT} {fmt_number(scrap_rate_per_kg, 2)}/kg", result=money(total_scrap_value)),
             CalculationStep(section="Cost", name="Total estimated cost", formula="Total cost = Material cost + process cost + surface treatment cost", substituted_values=f"{CURRENCY_UNIT} {round_money(total_material_cost)} + {CURRENCY_UNIT} {round_money(total_process_cost)} + {CURRENCY_UNIT} {round_money(surface_cost)}", result=money(total)),
         ]
     )

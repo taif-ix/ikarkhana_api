@@ -80,15 +80,26 @@ async def extract_dimensions(diagram: UploadFile = File(...)) -> ExtractedDimens
     return extract_dimensions_with_gemini(content, diagram.content_type)
 
 
+async def _read_child_drawings(child_diagrams: list[UploadFile] | None) -> list[tuple[str, bytes, str | None]]:
+    drawings: list[tuple[str, bytes, str | None]] = []
+    for child in child_diagrams or []:
+        drawings.append((child.filename or "child-detail-drawing", await child.read(), child.content_type))
+    return drawings
+
+
 @router.post("/extract-structured", response_model=StructuredExtraction, response_model_exclude_none=True)
-async def extract_structured(diagram: UploadFile = File(...)) -> StructuredExtraction:
+async def extract_structured(
+    diagram: UploadFile = File(...),
+    child_diagrams: list[UploadFile] | None = File(None),
+) -> StructuredExtraction:
     content = await diagram.read()
-    return extract_structured_with_gemini(content, diagram.content_type)
+    return extract_structured_with_gemini(content, diagram.content_type, await _read_child_drawings(child_diagrams))
 
 
 @router.post("/extract-cost-breakdown", response_model=StructuredCostBreakdown, response_model_exclude_none=True)
 async def extract_cost_breakdown(
     diagram: UploadFile = File(...),
+    child_diagrams: list[UploadFile] | None = File(None),
     material_rate_per_kg: float | None = Form(RATE_PER_KG),
     laser_cutting_rate_per_meter: float = Form(RATE_PER_CUT_METER),
     press_machine_rate_per_hit: float = Form(RATE_PER_PRESS_MACHINE_HIT),
@@ -99,7 +110,7 @@ async def extract_cost_breakdown(
     tacking_fixed_setup_cost: float = Form(LABOR_TACKING_FIXED),
 ) -> StructuredCostBreakdown:
     content = await diagram.read()
-    extraction = extract_structured_with_gemini(content, diagram.content_type)
+    extraction = extract_structured_with_gemini(content, diagram.content_type, await _read_child_drawings(child_diagrams))
     return calculate_structured_cost_breakdown(
         extraction,
         material_rate_per_kg=material_rate_per_kg,

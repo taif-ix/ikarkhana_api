@@ -26,6 +26,15 @@ def money(value: float) -> str:
     return f"{CURRENCY_UNIT} {round_money(value)}"
 
 
+def fmt_number(value: float | int | None, decimals: int = 3) -> str:
+    if value is None:
+        return "0"
+    numeric = float(value)
+    if numeric.is_integer():
+        return str(int(numeric))
+    return f"{numeric:.{decimals}f}".rstrip("0").rstrip(".")
+
+
 def normalize_material_type(material_type: str | None, material_code: str | None = None) -> str:
     haystack = f"{material_type or ''} {material_code or ''}".lower().replace("_", " ").replace("-", "")
     for key, details in MATERIALS.items():
@@ -120,7 +129,7 @@ def rod_stock_summary(piece_weight_kg: float, piece_length_mm: float, quantity: 
         "gross_stock_weight_kg": gross_stock_cost,
         "scrap_weight_kg": scrap_weight,
         "leftover_per_stock_mm": leftover_per_full_stock_mm,
-        "approach": f"Linear 6000 mm bar nesting: floor(6000 / {piece_length_mm}) = {pieces_per_stock} pieces, leftover {round(leftover_per_full_stock_mm, 2)} mm per full stock.",
+        "approach": f"Linear 6000 mm bar nesting: floor({fmt_number(ROD_STOCK_LENGTH_MM)} / {fmt_number(piece_length_mm)}) = {pieces_per_stock} pieces, leftover {fmt_number(leftover_per_full_stock_mm, 2)} mm per full stock.",
     }
 
 
@@ -133,10 +142,10 @@ def sheet_nesting_summary(length_mm: float, width_mm: float, thickness_mm: float
     rotated_count = rotated_cols * rotated_rows
     if rotated_count > normal_count:
         parts_per_sheet = rotated_count
-        approach = f"Rotated grid nesting on 2500 x 1250 sheet: floor(2500/{width_mm}) x floor(1250/{length_mm}) = {parts_per_sheet} parts."
+        approach = f"Rotated grid nesting on {fmt_number(SHEET_STOCK_LENGTH_MM)} x {fmt_number(SHEET_STOCK_WIDTH_MM)} sheet: floor({fmt_number(SHEET_STOCK_LENGTH_MM)} / {fmt_number(width_mm)}) x floor({fmt_number(SHEET_STOCK_WIDTH_MM)} / {fmt_number(length_mm)}) = {parts_per_sheet} parts."
     else:
         parts_per_sheet = normal_count
-        approach = f"Straight grid nesting on 2500 x 1250 sheet: floor(2500/{length_mm}) x floor(1250/{width_mm}) = {parts_per_sheet} parts."
+        approach = f"Straight grid nesting on {fmt_number(SHEET_STOCK_LENGTH_MM)} x {fmt_number(SHEET_STOCK_WIDTH_MM)} sheet: floor({fmt_number(SHEET_STOCK_LENGTH_MM)} / {fmt_number(length_mm)}) x floor({fmt_number(SHEET_STOCK_WIDTH_MM)} / {fmt_number(width_mm)}) = {parts_per_sheet} parts."
     parts_per_sheet = max(parts_per_sheet, 1)
     sheet_count = math.ceil(quantity / parts_per_sheet)
     sheet_weight = plate_weight(SHEET_STOCK_LENGTH_MM, SHEET_STOCK_WIDTH_MM, thickness_mm, density_kg_per_mm3)
@@ -165,9 +174,9 @@ def square_tube_steps(name: str, outer_mm: float, thickness_mm: float, length_mm
     area = (outer_mm * outer_mm) - (inner * inner)
     volume = area * length_mm
     return [
-        CalculationStep(section="Weight", name=f"{name} inner size", formula="Inner size = Outer size - (2 x wall thickness)", substituted_values=f"{outer_mm} - (2 x {thickness_mm})", result=f"{inner} mm"),
-        CalculationStep(section="Weight", name=f"{name} steel area", formula="Steel area (mm2) = outer area (mm2) - inner hollow area (mm2)", substituted_values=f"({outer_mm} mm x {outer_mm} mm) - ({inner} mm x {inner} mm)", result=f"{round(area, 3)} mm2"),
-        CalculationStep(section="Weight", name=f"{name} volume", formula="Volume (mm3) = steel area (mm2) x length (mm)", substituted_values=f"{round(area, 3)} mm2 x {length_mm} mm", result=f"{round(volume, 3)} mm3"),
+        CalculationStep(section="Weight", name=f"{name} inner size", formula="Inner size = Outer size - (2 x wall thickness)", substituted_values=f"{fmt_number(outer_mm)} - (2 x {fmt_number(thickness_mm)})", result=f"{fmt_number(inner)} mm"),
+        CalculationStep(section="Weight", name=f"{name} steel area", formula="Steel area (mm2) = outer area (mm2) - inner hollow area (mm2)", substituted_values=f"({fmt_number(outer_mm)} mm x {fmt_number(outer_mm)} mm) - ({fmt_number(inner)} mm x {fmt_number(inner)} mm)", result=f"{fmt_number(area)} mm2"),
+        CalculationStep(section="Weight", name=f"{name} volume", formula="Volume (mm3) = steel area (mm2) x length (mm)", substituted_values=f"{fmt_number(area)} mm2 x {fmt_number(length_mm)} mm", result=f"{fmt_number(volume)} mm3"),
         CalculationStep(section="Weight", name=f"{name} weight", formula=f"Weight (kg) = volume (mm3) x {material_label} density (kg/mm3)", substituted_values=f"{round(volume, 3)} mm3 x {density_kg_per_mm3} kg/mm3", result=kg(weight)),
     ]
 
@@ -175,7 +184,7 @@ def square_tube_steps(name: str, outer_mm: float, thickness_mm: float, length_mm
 def plate_steps(name: str, length_mm: float, width_mm: float, thickness_mm: float, weight: float, density_kg_per_mm3: float, material_label: str) -> list[CalculationStep]:
     volume = length_mm * width_mm * thickness_mm
     return [
-        CalculationStep(section="Weight", name=f"{name} volume", formula="Volume (mm3) = length (mm) x width (mm) x thickness (mm)", substituted_values=f"{length_mm} mm x {width_mm} mm x {thickness_mm} mm", result=f"{round(volume, 3)} mm3"),
+        CalculationStep(section="Weight", name=f"{name} volume", formula="Volume (mm3) = length (mm) x width (mm) x thickness (mm)", substituted_values=f"{fmt_number(length_mm)} mm x {fmt_number(width_mm)} mm x {fmt_number(thickness_mm)} mm", result=f"{fmt_number(volume)} mm3"),
         CalculationStep(section="Weight", name=f"{name} weight", formula=f"Weight (kg) = volume (mm3) x {material_label} density (kg/mm3)", substituted_values=f"{round(volume, 3)} mm3 x {density_kg_per_mm3} kg/mm3", result=kg(weight)),
     ]
 
@@ -184,17 +193,17 @@ def round_tube_steps(name: str, od_mm: float, thickness_mm: float, length_mm: fl
     inner = max(od_mm - (2 * thickness_mm), 0)
     area = math.pi / 4 * ((od_mm * od_mm) - (inner * inner))
     return [
-        CalculationStep(section="Weight", name=f"{name} inside diameter", formula="Inside diameter = Outside diameter - (2 x wall thickness)", substituted_values=f"{od_mm} - (2 x {thickness_mm})", result=f"{inner} mm"),
-        CalculationStep(section="Weight", name=f"{name} steel area", formula="Steel area (mm2) = pi / 4 x (OD2 - ID2), where OD and ID are in mm", substituted_values=f"pi / 4 x ({od_mm} mm^2 - {inner} mm^2)", result=f"{round(area, 3)} mm2"),
-        CalculationStep(section="Weight", name=f"{name} weight", formula=f"Weight (kg) = steel area (mm2) x length (mm) x {material_label} density (kg/mm3)", substituted_values=f"{round(area, 3)} mm2 x {length_mm} mm x {density_kg_per_mm3} kg/mm3", result=kg(weight)),
+        CalculationStep(section="Weight", name=f"{name} inside diameter", formula="Inside diameter = Outside diameter - (2 x wall thickness)", substituted_values=f"{fmt_number(od_mm)} - (2 x {fmt_number(thickness_mm)})", result=f"{fmt_number(inner)} mm"),
+        CalculationStep(section="Weight", name=f"{name} steel area", formula="Steel area (mm2) = pi / 4 x (OD2 - ID2), where OD and ID are in mm", substituted_values=f"pi / 4 x ({fmt_number(od_mm)} mm^2 - {fmt_number(inner)} mm^2)", result=f"{fmt_number(area)} mm2"),
+        CalculationStep(section="Weight", name=f"{name} weight", formula=f"Weight (kg) = steel area (mm2) x length (mm) x {material_label} density (kg/mm3)", substituted_values=f"{fmt_number(area)} mm2 x {fmt_number(length_mm)} mm x {density_kg_per_mm3} kg/mm3", result=kg(weight)),
     ]
 
 
 def rod_steps(name: str, diameter_mm: float, length_mm: float, quantity: int, weight: float, density_kg_per_mm3: float, material_label: str) -> list[CalculationStep]:
     area = math.pi / 4 * diameter_mm * diameter_mm
     return [
-        CalculationStep(section="Weight", name=f"{name} steel area", formula="Solid round area (mm2) = pi / 4 x diameter (mm)^2", substituted_values=f"pi / 4 x {diameter_mm} mm^2", result=f"{round(area, 3)} mm2"),
-        CalculationStep(section="Weight", name=f"{name} total weight", formula="Weight (kg) = area (mm2) x length (mm) x density (kg/mm3) x quantity", substituted_values=f"{round(area, 3)} mm2 x {length_mm} mm x {density_kg_per_mm3} kg/mm3 x {quantity} pcs ({material_label})", result=kg(weight)),
+        CalculationStep(section="Weight", name=f"{name} steel area", formula="Solid round area (mm2) = pi / 4 x diameter (mm)^2", substituted_values=f"pi / 4 x {fmt_number(diameter_mm)} mm^2", result=f"{fmt_number(area)} mm2"),
+        CalculationStep(section="Weight", name=f"{name} total weight", formula="Weight (kg) = area (mm2) x length (mm) x density (kg/mm3) x quantity", substituted_values=f"{fmt_number(area)} mm2 x {fmt_number(length_mm)} mm x {density_kg_per_mm3} kg/mm3 x {quantity} pcs ({material_label})", result=kg(weight)),
     ]
 
 

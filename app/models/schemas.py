@@ -167,10 +167,24 @@ class ExtractedCuttingMetrics(BaseModel):
     laser_cutting_length_mm: float = 0
     press_machine_hits_count: int = 0
 
+    @field_validator("laser_cutting_length_mm", "press_machine_hits_count", mode="before")
+    @classmethod
+    def normalize_missing_cutting_metric(cls, value: object) -> object:
+        if value is None or value == "":
+            return 0
+        return value
+
 
 class NestingLayoutHint(BaseModel):
     nesting_strategy: str = "NA"
     recommended_grain_or_cut_direction: str = "NA"
+
+    @field_validator("nesting_strategy", "recommended_grain_or_cut_direction", mode="before")
+    @classmethod
+    def normalize_missing_nesting_text(cls, value: object) -> str:
+        if value is None or value == "":
+            return "NA"
+        return str(value)
 
 
 class PartImageRegion(BaseModel):
@@ -179,6 +193,13 @@ class PartImageRegion(BaseModel):
     x_max: float | None = None
     y_max: float | None = None
     source: str = "NULL - Insufficient Data"
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def normalize_missing_region_source(cls, value: object) -> str:
+        if value is None or value == "":
+            return "NULL - Insufficient Data"
+        return str(value)
 
 
 class ExtractedCostPart(BaseModel):
@@ -195,6 +216,13 @@ class ExtractedCostPart(BaseModel):
     cutting_metrics: ExtractedCuttingMetrics = Field(default_factory=ExtractedCuttingMetrics)
     nesting_layout_hint: NestingLayoutHint = Field(default_factory=NestingLayoutHint)
     notes: list[str] = Field(default_factory=list)
+
+    @field_validator("part_number", "component_type", mode="before")
+    @classmethod
+    def normalize_required_part_text(cls, value: object) -> str:
+        if value is None or value == "":
+            return "unknown"
+        return str(value)
 
     @field_validator("notes", mode="before")
     @classmethod
@@ -214,10 +242,61 @@ class ExtractedCostPart(BaseModel):
             return "NA"
         return str(value)
 
+    @field_validator("per_set_qty", mode="before")
+    @classmethod
+    def normalize_missing_qty(cls, value: object) -> object:
+        if value is None or value == "":
+            return 1
+        return value
+
+    @field_validator("bends_per_part", mode="before")
+    @classmethod
+    def normalize_missing_bends(cls, value: object) -> object:
+        if value is None or value == "":
+            return 0
+        return value
+
 
 class ExtractedAssemblyFabrication(BaseModel):
     total_assembly_welding_length_mm: float = 0
     notes: list[str] = Field(default_factory=list)
+
+    @field_validator("total_assembly_welding_length_mm", mode="before")
+    @classmethod
+    def normalize_missing_weld_length(cls, value: object) -> object:
+        if value is None or value == "":
+            return 0
+        return value
+
+
+class ReferencedDrawing(BaseModel):
+    drawing_number: str
+    file_name_hint: str | None = None
+    referenced_by_part_number: str | None = None
+    referenced_by_component: str | None = None
+    reason: str = "Child/detail drawing is referenced but not included in this upload."
+    required_for_costing: bool = True
+
+    @field_validator("drawing_number", mode="before")
+    @classmethod
+    def normalize_drawing_number(cls, value: object) -> str:
+        if value is None or value == "":
+            return "UNKNOWN"
+        return str(value)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def normalize_reference_reason(cls, value: object) -> str:
+        if value is None or value == "":
+            return "Child/detail drawing is referenced but not included in this upload."
+        return str(value)
+
+    @field_validator("required_for_costing", mode="before")
+    @classmethod
+    def normalize_required_for_costing(cls, value: object) -> object:
+        if value is None or value == "":
+            return True
+        return value
 
 
 class StructuredExtraction(BaseModel):
@@ -227,6 +306,7 @@ class StructuredExtraction(BaseModel):
     raw_material_code: str | None = None
     per_part_breakdown: list[ExtractedCostPart] = Field(default_factory=list)
     assembly_level_fabrication: ExtractedAssemblyFabrication = Field(default_factory=ExtractedAssemblyFabrication)
+    referenced_drawings: list[ReferencedDrawing] = Field(default_factory=list)
     confidence: float = 0
     notes: list[str] = Field(default_factory=list)
 
@@ -270,4 +350,5 @@ class StructuredCostBreakdown(BaseModel):
     part_name: str | None = None
     per_part_breakdown: list[CostedPartBreakdown]
     assembly_level_fabrication: AssemblyLevelFabrication
+    referenced_drawings: list[ReferencedDrawing] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
