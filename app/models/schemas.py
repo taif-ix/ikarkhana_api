@@ -299,6 +299,27 @@ class ReferencedDrawing(BaseModel):
         return value
 
 
+class ReferenceExtraction(BaseModel):
+    drawing_number: str | None = None
+    file_name_hint: str | None = None
+    referenced_drawings: list[ReferencedDrawing] = Field(default_factory=list)
+    confidence: float = 0
+    notes: list[str] = Field(default_factory=list)
+
+
+class BatchReferenceItem(BaseModel):
+    file_name: str
+    file_size_kb: float
+    drawing_number: str | None = None
+    referenced_drawings: list[ReferencedDrawing] = Field(default_factory=list)
+    confidence: float = 0
+    notes: list[str] = Field(default_factory=list)
+
+
+class BatchReferenceExtraction(BaseModel):
+    files: list[BatchReferenceItem] = Field(default_factory=list)
+
+
 class StructuredExtraction(BaseModel):
     currency: str = "INR"
     part_name: str | None = None

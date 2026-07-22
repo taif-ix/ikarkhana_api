@@ -9,7 +9,7 @@ import re
 from fastapi import HTTPException
 
 from app.core.config import ALLOWED_GEMINI_MODELS
-from app.models.schemas import ExtractedDimensions, StructuredExtraction
+from app.models.schemas import ExtractedDimensions, ReferenceExtraction, StructuredExtraction
 
 
 EXTRACTION_PROMPT = """
@@ -159,6 +159,41 @@ Extraction rules:
 """
 
 
+REFERENCE_EXTRACTION_PROMPT = """
+You are a deterministic engineering drawing reference scanner.
+Return only valid compact JSON. Do not use markdown.
+
+Extract only drawing/document references printed on this engineering drawing.
+Look in BOM rows, DETAIL DRG columns, remarks, notes, callouts, and referenced drawing lists.
+
+Return this exact JSON shape:
+{
+  "drawing_number": string or null,
+  "file_name_hint": string or null,
+  "referenced_drawings": [
+    {
+      "drawing_number": string,
+      "file_name_hint": string,
+      "referenced_by_part_number": string or null,
+      "referenced_by_component": string or null,
+      "reason": string,
+      "required_for_costing": true
+    }
+  ],
+  "confidence": number,
+  "notes": []
+}
+
+Rules:
+- Extract references like LS10267, LS10268, LS10269 exactly when printed.
+- file_name_hint should be drawing_number + ".tif" unless another extension is explicitly printed.
+- Do not include the current drawing itself in referenced_drawings.
+- Do not invent dependencies. If no child/detail drawing number is visible, return an empty referenced_drawings list.
+- If a BOM/detail drawing column says NIL, it is not a child drawing.
+- required_for_costing should be true when the referenced drawing likely contains missing dimensions, flat pattern, bend data, holes, or child geometry.
+"""
+
+
 def package_installed(package: str) -> bool:
     try:
         return importlib.util.find_spec(package) is not None
@@ -198,40 +233,44 @@ def clean_json_response(text: str) -> dict:
         return json.loads(repair_json_response(text))
 
 
-def image_bytes_for_gemini(content: bytes, content_type: str | None) -> tuple[bytes, str]:
+def _preprocess_image(
+    content: bytes,
+    content_type: str | None,
+    filename: str | None = None,
+    *,
+    max_side_px: int,
+) -> tuple[bytes, str]:
     mime_type = content_type or "application/octet-stream"
-    if mime_type in {"image/tiff", "image/tif"}:
-        try:
-            from PIL import Image
-        except ImportError as exc:
-            raise HTTPException(status_code=500, detail="Pillow is required to convert TIFF files.") from exc
+    filename = filename or ""
+    is_supported_bitmap = (
+        mime_type in {"image/tiff", "image/tif", "image/png", "image/jpeg", "image/jpg"}
+        or filename.lower().endswith((".tif", ".tiff", ".png", ".jpg", ".jpeg"))
+    )
+    if not is_supported_bitmap:
+        return content, mime_type
 
-        with Image.open(io.BytesIO(content)) as image:
-            image = image.convert("RGB")
-            output = io.BytesIO()
-            image.save(output, format="PNG")
-            return output.getvalue(), "image/png"
+    try:
+        from PIL import Image, ImageOps
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="Pillow is required to convert and optimize drawing images.") from exc
 
-    return content, mime_type
+    with Image.open(io.BytesIO(content)) as image:
+        image = ImageOps.exif_transpose(image)
+        image = image.convert("L")
+        image = ImageOps.autocontrast(image)
+        image = image.convert("RGB")
+        image.thumbnail((max_side_px, max_side_px), Image.Resampling.LANCZOS)
+        output = io.BytesIO()
+        image.save(output, format="PNG", optimize=True)
+        return output.getvalue(), "image/png"
+
+
+def image_bytes_for_gemini(content: bytes, content_type: str | None) -> tuple[bytes, str]:
+    return _preprocess_image(content, content_type, max_side_px=2200)
 
 
 def image_bytes_for_preview(content: bytes, content_type: str | None, filename: str | None) -> tuple[bytes, str]:
-    mime_type = content_type or "application/octet-stream"
-    filename = filename or ""
-    is_tiff = mime_type in {"image/tiff", "image/tif"} or filename.lower().endswith((".tif", ".tiff"))
-    if is_tiff:
-        try:
-            from PIL import Image
-        except ImportError as exc:
-            raise HTTPException(status_code=500, detail="Pillow is required to preview TIFF files.") from exc
-
-        with Image.open(io.BytesIO(content)) as image:
-            image = image.convert("RGB")
-            output = io.BytesIO()
-            image.save(output, format="PNG")
-            return output.getvalue(), "image/png"
-
-    return content, mime_type
+    return _preprocess_image(content, content_type, filename, max_side_px=3200)
 
 
 def extract_dimensions_with_gemini(content: bytes, content_type: str | None) -> ExtractedDimensions:
@@ -370,3 +409,20 @@ def extract_structured_with_gemini(
         )
     except (json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(status_code=502, detail=f"Gemini returned a response that could not be parsed as structured extraction JSON: {exc}") from exc
+
+
+def extract_references_with_gemini(content: bytes, content_type: str | None) -> ReferenceExtraction:
+    try:
+        extraction = ReferenceExtraction.model_validate(
+            _gemini_generate_json(content, content_type, REFERENCE_EXTRACTION_PROMPT)
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=f"Gemini returned a response that could not be parsed as reference JSON: {exc}") from exc
+
+    current = (extraction.drawing_number or "").strip().lower()
+    extraction.referenced_drawings = [
+        reference
+        for reference in extraction.referenced_drawings
+        if reference.drawing_number != "UNKNOWN" and reference.drawing_number.strip().lower() != current
+    ]
+    return extraction
