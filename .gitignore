@@ -19,6 +19,9 @@ venv/
 env/
 ENV/
 
+
+be.md
+
 # Logs and local runtime files
 *.log
 uvicorn*.log
@@ -38,3 +41,5 @@ dist/
 
 # Frontend artifacts should live in taif-ix/ikarkhana_web
 frontend/
+
+
