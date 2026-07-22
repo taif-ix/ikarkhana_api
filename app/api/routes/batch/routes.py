@@ -28,7 +28,7 @@ from app.services.vision import extract_references_with_gemini, extract_structur
 router = APIRouter()
 
 BATCH_PROCESS_JOBS: dict[str, dict[str, Any]] = {}
-BATCH_PROCESS_CONCURRENCY = max(int(os.getenv("BATCH_PROCESS_CONCURRENCY", "2")), 1)
+BATCH_PROCESS_CONCURRENCY = max(int(os.getenv("BATCH_PROCESS_CONCURRENCY", "4")), 1)
 
 
 def _public_batch_job(job: dict[str, Any]) -> dict[str, Any]:
@@ -217,30 +217,33 @@ async def retry_batch_process_file(job_id: str, file_name: str = Form(...)) -> d
 
 @router.post("/batch-extract-references", response_model=BatchReferenceExtraction, response_model_exclude_none=True)
 async def batch_extract_references(diagrams: list[UploadFile] = File(...)) -> BatchReferenceExtraction:
-    items: list[BatchReferenceItem] = []
-    for diagram in diagrams:
+    async def scan_one(diagram: UploadFile) -> BatchReferenceItem:
         content = await diagram.read()
         file_name = diagram.filename or "uploaded-drawing"
         try:
-            extraction = extract_references_with_gemini(content, diagram.content_type)
-            items.append(
-                BatchReferenceItem(
-                    file_name=file_name,
-                    file_size_kb=round(len(content) / 1024, 2),
-                    drawing_number=extraction.drawing_number,
-                    referenced_drawings=extraction.referenced_drawings,
-                    confidence=extraction.confidence,
-                    notes=extraction.notes,
-                )
+            extraction = await asyncio.to_thread(extract_references_with_gemini, content, diagram.content_type, file_name)
+            return BatchReferenceItem(
+                file_name=file_name,
+                file_size_kb=round(len(content) / 1024, 2),
+                drawing_number=extraction.drawing_number,
+                referenced_drawings=extraction.referenced_drawings,
+                confidence=extraction.confidence,
+                notes=extraction.notes,
             )
         except Exception as exc:
-            items.append(
-                BatchReferenceItem(
-                    file_name=file_name,
-                    file_size_kb=round(len(content) / 1024, 2),
-                    referenced_drawings=[],
-                    confidence=0,
-                    notes=[f"Reference scan failed for this file: {exc}"],
-                )
+            return BatchReferenceItem(
+                file_name=file_name,
+                file_size_kb=round(len(content) / 1024, 2),
+                referenced_drawings=[],
+                confidence=0,
+                notes=[f"Reference scan failed for this file: {exc}"],
             )
+
+    semaphore = asyncio.Semaphore(BATCH_PROCESS_CONCURRENCY)
+
+    async def scan_with_limit(diagram: UploadFile) -> BatchReferenceItem:
+        async with semaphore:
+            return await scan_one(diagram)
+
+    items = await asyncio.gather(*(scan_with_limit(diagram) for diagram in diagrams))
     return BatchReferenceExtraction(files=items)

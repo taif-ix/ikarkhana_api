@@ -26,6 +26,7 @@ from app.models.schemas import (
     LineItem,
     MaterialSummary,
     ProcessBreakdown,
+    StockNesting,
     StockSummary,
     StructuredCostBreakdown,
     StructuredExtraction,
@@ -209,16 +210,69 @@ def _weight_step_text(
     )
 
 
-def _stock_for_part(component_type: str, net_weight: float, length_mm: float, width_mm: float, thickness_mm: float, density: float, qty: int) -> tuple[float, float, str]:
+def _stock_for_part(
+    component_type: str,
+    net_weight: float,
+    length_mm: float,
+    width_mm: float,
+    thickness_mm: float,
+    density: float,
+    qty: int,
+) -> tuple[float, float, StockNesting]:
     component = component_type.lower()
     if component in {"tube", "rod", "accessory"}:
+        if length_mm <= 0 or net_weight <= 0:
+            nesting = StockNesting(
+                stock_form="rod/profile",
+                stock_length_mm=ROD_STOCK_LENGTH_MM,
+                part_length_mm=None,
+                approach="Nesting not calculated because part length or weight was not extracted from the drawing.",
+            )
+            return net_weight, 0.0, nesting
         stock = rod_stock_summary(net_weight, length_mm, qty)
+        parts_per_stock = max(int(stock["parts_per_stock"]), 1)
+        gross_unit = float(stock["stock_weight_kg"]) / parts_per_stock
+        scrap_unit = max(gross_unit - net_weight, 0)
+        nesting = StockNesting(
+            stock_form="rod/profile",
+            stock_length_mm=ROD_STOCK_LENGTH_MM,
+            part_length_mm=length_mm,
+            parts_per_stock=parts_per_stock,
+            stock_count=int(stock["stock_count"]),
+            stock_weight_kg=round(float(stock["stock_weight_kg"]), 3),
+            scrap_weight_kg=round(scrap_unit, 3),
+            leftover_per_stock_mm=round(float(stock["leftover_per_stock_mm"]), 3),
+            approach=str(stock["approach"]),
+        )
+        return gross_unit, scrap_unit, nesting
     else:
+        if length_mm <= 0 or width_mm <= 0 or thickness_mm <= 0:
+            nesting = StockNesting(
+                stock_form="blank sheet",
+                stock_length_mm=SHEET_STOCK_LENGTH_MM,
+                stock_width_mm=SHEET_STOCK_WIDTH_MM,
+                part_length_mm=length_mm if length_mm > 0 else None,
+                part_width_mm=width_mm if width_mm > 0 else None,
+                approach="Nesting not calculated because length, width, or thickness was not extracted from the drawing.",
+            )
+            return net_weight, 0.0, nesting
         stock = sheet_nesting_summary(length_mm, width_mm, thickness_mm, density, qty)
     parts_per_stock = max(int(stock["parts_per_stock"]), 1)
     gross_unit = float(stock["stock_weight_kg"]) / parts_per_stock
     scrap_unit = max(gross_unit - net_weight, 0)
-    return gross_unit, scrap_unit, str(stock["approach"])
+    nesting = StockNesting(
+        stock_form="blank sheet",
+        stock_length_mm=SHEET_STOCK_LENGTH_MM,
+        stock_width_mm=SHEET_STOCK_WIDTH_MM,
+        part_length_mm=length_mm,
+        part_width_mm=width_mm,
+        parts_per_stock=parts_per_stock,
+        stock_count=int(stock["stock_count"]),
+        stock_weight_kg=round(float(stock["stock_weight_kg"]), 3),
+        scrap_weight_kg=round(scrap_unit, 3),
+        approach=str(stock["approach"]),
+    )
+    return gross_unit, scrap_unit, nesting
 
 
 def calculate_structured_cost_breakdown(
@@ -263,7 +317,7 @@ def calculate_structured_cost_breakdown(
         surface_area, net_weight = _part_area_and_weight(part.component_type, part.tube_type, length, width_or_dia, secondary_width, thickness, density)
         surface_formula, surface_values = _surface_area_step_text(part.component_type, part.tube_type, length, width_or_dia, secondary_width, thickness)
         weight_formula, weight_values = _weight_step_text(part.component_type, part.tube_type, length, width_or_dia, secondary_width, thickness, density)
-        gross_weight, scrap_weight, stock_approach = _stock_for_part(part.component_type, net_weight, length, width_or_dia, thickness, density, qty)
+        gross_weight, scrap_weight, stock_nesting = _stock_for_part(part.component_type, net_weight, length, width_or_dia, thickness, density, qty)
         laser_length_mm = max(float(part.cutting_metrics.laser_cutting_length_mm or 0), 0.0)
         press_hits = max(int(part.cutting_metrics.press_machine_hits_count or 0), 0)
         bends = max(int(part.bends_per_part or 0), 0)
@@ -296,7 +350,7 @@ def calculate_structured_cost_breakdown(
                 section="Stock",
                 name=f"Part {part.part_number} gross RM weight",
                 formula="Gross unit raw material weight (kg/part) = stock weight (kg/stock) / parts per stock",
-                substituted_values=stock_approach,
+                substituted_values=stock_nesting.approach,
                 result=kg(gross_weight),
             ),
             CalculationStep(
@@ -361,13 +415,14 @@ def calculate_structured_cost_breakdown(
         part_payload["part_number"] = part.part_number or str(index)
         part_payload["nesting_layout_hint"] = part.nesting_layout_hint.model_copy(
             update={
-                "nesting_strategy": part.nesting_layout_hint.nesting_strategy or stock_approach,
+                "nesting_strategy": stock_nesting.approach,
             }
         )
         costed_parts.append(
             CostedPartBreakdown(
                 **part_payload,
                 surface_area_sq_meter=round(surface_area, 4),
+                stock_nesting=stock_nesting,
                 weight_ledger=WeightLedger(
                     unit_gross_rm_weight_kg=round(gross_weight, 3),
                     unit_net_finished_weight_kg=round(net_weight, 3),

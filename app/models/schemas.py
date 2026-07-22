@@ -217,6 +217,34 @@ class ExtractedCostPart(BaseModel):
     nesting_layout_hint: NestingLayoutHint = Field(default_factory=NestingLayoutHint)
     notes: list[str] = Field(default_factory=list)
 
+    @field_validator("dimensions", mode="before")
+    @classmethod
+    def normalize_missing_dimensions(cls, value: object) -> object:
+        if value is None or value == "":
+            return {}
+        return value
+
+    @field_validator("image_region", mode="before")
+    @classmethod
+    def normalize_missing_image_region(cls, value: object) -> object:
+        if value is None or value == "":
+            return {}
+        return value
+
+    @field_validator("cutting_metrics", mode="before")
+    @classmethod
+    def normalize_missing_cutting_metrics(cls, value: object) -> object:
+        if value is None or value == "":
+            return {}
+        return value
+
+    @field_validator("nesting_layout_hint", mode="before")
+    @classmethod
+    def normalize_missing_nesting_layout_hint(cls, value: object) -> object:
+        if value is None or value == "":
+            return {}
+        return value
+
     @field_validator("part_number", "component_type", mode="before")
     @classmethod
     def normalize_required_part_text(cls, value: object) -> str:
@@ -351,9 +379,24 @@ class CalculatedCosts(BaseModel):
     total_combined_set_cost_via_machine: float
 
 
+class StockNesting(BaseModel):
+    stock_form: str
+    stock_length_mm: float | None = None
+    stock_width_mm: float | None = None
+    part_length_mm: float | None = None
+    part_width_mm: float | None = None
+    parts_per_stock: int = 0
+    stock_count: int = 0
+    stock_weight_kg: float = 0
+    scrap_weight_kg: float = 0
+    leftover_per_stock_mm: float | None = None
+    approach: str
+
+
 class CostedPartBreakdown(ExtractedCostPart):
     surface_area_sq_meter: float
     weight_ledger: WeightLedger
+    stock_nesting: StockNesting
     calculated_costs: CalculatedCosts
     calculation_steps: list[CalculationStep] = Field(default_factory=list)
 

@@ -165,6 +165,8 @@ Return only valid compact JSON. Do not use markdown.
 
 Extract only drawing/document references printed on this engineering drawing.
 Look in BOM rows, DETAIL DRG columns, remarks, notes, callouts, and referenced drawing lists.
+References may be drawing numbers such as LS10267, LS10268, LS10269, MDG0008, or any similar printed document/detail number.
+They may appear without a file extension.
 
 Return this exact JSON shape:
 {
@@ -185,13 +187,77 @@ Return this exact JSON shape:
 }
 
 Rules:
-- Extract references like LS10267, LS10268, LS10269 exactly when printed.
+- Extract every printed child/detail/reference drawing number exactly as shown.
+- Strongly inspect the BOM/table columns named DETAIL DRG, DETAIL DRAWING, DRG NO, CHILD DRG, REF DRG, DRAWING NO, and REMARKS.
+- In BOM rows, treat the DESCRIPTION & DIMENSIONS column as the component name and the DETAIL DRG / REMARKS drawing-number columns as possible child references.
+- Material/specification values like RDSO/SPEC, C-K201, Gr. 304, ASTM-A312, IS:6603-01, X04Cr12, and NIL are not child drawing numbers unless they appear in a detail drawing/reference column with a drawing-number pattern.
+- A valid child drawing usually looks like LS followed by digits, MDG followed by digits, or another explicit drawing/document number printed as a reference.
 - file_name_hint should be drawing_number + ".tif" unless another extension is explicitly printed.
 - Do not include the current drawing itself in referenced_drawings.
 - Do not invent dependencies. If no child/detail drawing number is visible, return an empty referenced_drawings list.
 - If a BOM/detail drawing column says NIL, it is not a child drawing.
+- If a BOM/detail drawing column contains a drawing number for a component row, include it and set referenced_by_component from that row.
 - required_for_costing should be true when the referenced drawing likely contains missing dimensions, flat pattern, bend data, holes, or child geometry.
 """
+
+BOM_REFERENCE_EXTRACTION_PROMPT = """
+You are reading only the BOM / parts list / title block area of an engineering drawing.
+Return only valid compact JSON. Do not use markdown.
+
+Focus on the tabular rows with headers like:
+ITEM, DESCRIPTION & DIMENSIONS, QPASSY/QTY, DETAIL DRG, MATL. & SPEC., REMARKS.
+
+The important dependency column is DETAIL DRG.
+For each row:
+- If DETAIL DRG contains NIL, ignore it.
+- If DETAIL DRG contains a drawing number like LS10268, LS10269, LS10267, MDG0008, include it.
+- Use the row ITEM as referenced_by_part_number.
+- Use DESCRIPTION & DIMENSIONS as referenced_by_component.
+- Do not treat MATL. & SPEC. values as dependencies.
+- Do not treat RDSO/SPEC, C-K201, Gr. 304, ASTM-A312, IS:6603-01, X04Cr12, or NIL as dependencies.
+
+Example:
+ITEM 4 | CHAIR ANGLE-LH | 1 | LS10268 | NIL | NIL
+must return drawing_number "LS10268", file_name_hint "LS10268.tif",
+referenced_by_part_number "4", referenced_by_component "CHAIR ANGLE-LH".
+
+Return this exact JSON shape:
+{
+  "drawing_number": string or null,
+  "file_name_hint": string or null,
+  "referenced_drawings": [
+    {
+      "drawing_number": string,
+      "file_name_hint": string,
+      "referenced_by_part_number": string or null,
+      "referenced_by_component": string or null,
+      "reason": string,
+      "required_for_costing": true
+    }
+  ],
+  "confidence": number,
+  "notes": []
+}
+
+If no real drawing number is visible in DETAIL DRG / reference columns, return an empty referenced_drawings list.
+"""
+
+
+REFERENCE_NUMBER_PATTERN = re.compile(r"\b(?:LS\d{4,6}[A-Z]?|MDG\d{3,6}|[A-Z]{2,5}\d{3,6}[A-Z]?)\b", re.IGNORECASE)
+INVALID_REFERENCE_TOKENS = {
+    "NIL",
+    "RDSO",
+    "SPEC",
+    "RDSO/SPEC",
+    "C-K201",
+    "CK201",
+    "K201",
+    "GR304",
+    "GR.304",
+    "304",
+    "316",
+    "ASTM",
+}
 
 
 def package_installed(package: str) -> bool:
@@ -337,6 +403,8 @@ def _gemini_generate_json(
     content_type: str | None,
     prompt: str,
     child_drawings: list[tuple[str, bytes, str | None]] | None = None,
+    *,
+    max_side_px: int = 2200,
 ) -> dict:
     provider = os.getenv("GEMINI_PROVIDER", "gemini_api").lower()
     api_key = os.getenv("GEMINI_API_KEY")
@@ -359,14 +427,14 @@ def _gemini_generate_json(
     except ImportError as exc:
         raise HTTPException(status_code=500, detail="Install google-genai to enable Gemini API extraction.") from exc
 
-    image_content, mime_type = image_bytes_for_gemini(content, content_type)
+    image_content, mime_type = _preprocess_image(content, content_type, max_side_px=max_side_px)
     client = genai.Client(vertexai=True, project=project, location=location) if provider == "vertex_ai" else genai.Client(api_key=api_key)
     contents: list[object] = [
         "Main uploaded engineering drawing:",
         types.Part.from_bytes(data=image_content, mime_type=mime_type),
     ]
     for filename, child_content, child_content_type in child_drawings or []:
-        child_image_content, child_mime_type = image_bytes_for_gemini(child_content, child_content_type)
+        child_image_content, child_mime_type = _preprocess_image(child_content, child_content_type, max_side_px=max_side_px)
         contents.extend(
             [
                 f"Referenced child/detail drawing file: {filename}",
@@ -398,31 +466,107 @@ def _gemini_generate_json(
     return clean_json_response(response.text)
 
 
+def normalize_structured_payload(payload: dict) -> dict:
+    parts = payload.get("per_part_breakdown")
+    if not isinstance(parts, list):
+        payload["per_part_breakdown"] = []
+        return payload
+
+    nested_defaults = {
+        "dimensions": {},
+        "image_region": {},
+        "cutting_metrics": {},
+        "nesting_layout_hint": {},
+    }
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        for key, default in nested_defaults.items():
+            if part.get(key) is None:
+                part[key] = default.copy()
+        if part.get("notes") is None:
+            part["notes"] = []
+    return payload
+
+
+def normalize_reference_extraction(extraction: ReferenceExtraction, filename: str | None = None) -> ReferenceExtraction:
+    current_numbers = {
+        value.strip().upper().replace("-", "")
+        for value in [
+            extraction.drawing_number or "",
+            (extraction.file_name_hint or "").rsplit(".", 1)[0],
+            (filename or "").rsplit(".", 1)[0],
+        ]
+        if value
+    }
+    cleaned = []
+    seen = set()
+
+    for reference in extraction.referenced_drawings:
+        raw_number = str(reference.drawing_number or "").strip()
+        raw_hint = str(reference.file_name_hint or "").strip()
+        candidate_text = f"{raw_number} {raw_hint}"
+        match = REFERENCE_NUMBER_PATTERN.search(candidate_text)
+        if not match:
+            continue
+
+        drawing_number = match.group(0).upper()
+        normalized_number = drawing_number.replace("-", "")
+        if normalized_number in current_numbers or normalized_number in INVALID_REFERENCE_TOKENS:
+            continue
+
+        file_name_hint = raw_hint if raw_hint and raw_hint.lower() != "none" else f"{drawing_number}.tif"
+        if "." not in file_name_hint:
+            file_name_hint = f"{drawing_number}.tif"
+        if not file_name_hint.lower().startswith(drawing_number.lower()):
+            file_name_hint = f"{drawing_number}.tif"
+
+        dedupe_key = normalized_number
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+
+        reference.drawing_number = drawing_number
+        reference.file_name_hint = file_name_hint
+        reference.required_for_costing = True
+        cleaned.append(reference)
+
+    extraction.referenced_drawings = cleaned
+    return extraction
+
+
 def extract_structured_with_gemini(
     content: bytes,
     content_type: str | None,
     child_drawings: list[tuple[str, bytes, str | None]] | None = None,
 ) -> StructuredExtraction:
     try:
-        return StructuredExtraction.model_validate(
-            _gemini_generate_json(content, content_type, STRUCTURED_EXTRACTION_PROMPT, child_drawings)
-        )
+        payload = _gemini_generate_json(content, content_type, STRUCTURED_EXTRACTION_PROMPT, child_drawings)
+        return StructuredExtraction.model_validate(normalize_structured_payload(payload))
     except (json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(status_code=502, detail=f"Gemini returned a response that could not be parsed as structured extraction JSON: {exc}") from exc
 
 
-def extract_references_with_gemini(content: bytes, content_type: str | None) -> ReferenceExtraction:
+def extract_references_with_gemini(content: bytes, content_type: str | None, filename: str | None = None) -> ReferenceExtraction:
     try:
         extraction = ReferenceExtraction.model_validate(
-            _gemini_generate_json(content, content_type, REFERENCE_EXTRACTION_PROMPT)
+            _gemini_generate_json(content, content_type, REFERENCE_EXTRACTION_PROMPT, max_side_px=3400)
         )
     except (json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(status_code=502, detail=f"Gemini returned a response that could not be parsed as reference JSON: {exc}") from exc
 
-    current = (extraction.drawing_number or "").strip().lower()
-    extraction.referenced_drawings = [
-        reference
-        for reference in extraction.referenced_drawings
-        if reference.drawing_number != "UNKNOWN" and reference.drawing_number.strip().lower() != current
-    ]
+    extraction = normalize_reference_extraction(extraction, filename)
+    if extraction.referenced_drawings:
+        return extraction
+
+    try:
+        bom_extraction = ReferenceExtraction.model_validate(
+            _gemini_generate_json(content, content_type, BOM_REFERENCE_EXTRACTION_PROMPT, max_side_px=3800)
+        )
+    except (json.JSONDecodeError, ValueError):
+        return extraction
+
+    bom_extraction = normalize_reference_extraction(bom_extraction, filename)
+    if bom_extraction.referenced_drawings:
+        return bom_extraction
     return extraction

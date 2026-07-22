@@ -29,7 +29,7 @@ async def extract_dimensions(diagram: UploadFile = File(...)) -> ExtractedDimens
 @router.post("/extract-references", response_model=ReferenceExtraction, response_model_exclude_none=True)
 async def extract_references(diagram: UploadFile = File(...)) -> ReferenceExtraction:
     content = await diagram.read()
-    return extract_references_with_gemini(content, diagram.content_type)
+    return extract_references_with_gemini(content, diagram.content_type, diagram.filename)
 
 
 @router.post("/extract-structured", response_model=StructuredExtraction, response_model_exclude_none=True)
