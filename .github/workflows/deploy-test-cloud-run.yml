@@ -1,0 +1,34 @@
+name: Deploy test.py to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - poc
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Build and deploy test.py
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: gen-lang-client-0148520460
+
+      - name: Deploy test.py through Cloud Build
+        run: gcloud builds submit --project gen-lang-client-0148520460 --config cloudbuild.test.yaml
