@@ -737,7 +737,7 @@ async def stream_live_calculations(session_id: str):
 
     async def sse_event_generator():
         session_data = session_cache[session_id]
-        sem = asyncio.Semaphore(15)
+        sem = asyncio.Semaphore(3)
         
         async def worker(item):
             async with sem:
