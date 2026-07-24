@@ -7,7 +7,7 @@ on:
 
 jobs:
   deploy:
-    uses: YOUR_GITHUB_USERNAME/ikarkhana_api/.github/workflows/reusable-cloudrun.yml@main
+    uses: taif-ix/ikarkhana_api/.github/workflows/reusable-cloudrun.yml@main
     with:
       service_name: ikarkhana-test
       dockerfile: Dockerfile
