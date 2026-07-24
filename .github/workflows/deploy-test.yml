@@ -8,9 +8,15 @@ on:
 jobs:
   deploy:
     uses: taif-ix/ikarkhana_api/.github/workflows/reusable-cloudrun.yml@main
+
     with:
       service_name: ikarkhana-test
       dockerfile: Dockerfile
+      repository: ikarkhana
       image_name: ikarkhana-test
       region: asia-south1
       project_id: gen-lang-client-0148520460
+      gemini_provider: vertex_ai
+      gemini_model: gemini-2.5-pro
+
+    secrets: inherit
