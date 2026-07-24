@@ -19,6 +19,7 @@ jobs:
       repository: cloud-run-source-deploy
       image_name: ikarkhana-test
       region: asia-south1
+      vertex_location: "us-central1"
       project_id: gen-lang-client-0148520460
       gemini_provider: vertex_ai
       gemini_model: gemini-2.5-pro
