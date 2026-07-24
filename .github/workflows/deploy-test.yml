@@ -1,0 +1,16 @@
+name: Deploy POC
+
+on:
+  push:
+    branches:
+      - poc
+
+jobs:
+  deploy:
+    uses: YOUR_GITHUB_USERNAME/ikarkhana_api/.github/workflows/reusable-cloudrun.yml@main
+    with:
+      service_name: ikarkhana-test
+      dockerfile: Dockerfile
+      image_name: ikarkhana-test
+      region: asia-south1
+      project_id: gen-lang-client-0148520460

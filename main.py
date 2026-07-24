@@ -707,7 +707,7 @@ async def serve_frontend_workspace():
 async def initialize_async_batch(raw_files: List[UploadFile] = File(...)):
     session_id = uuid.uuid4().hex
     file_records = []
-
+    
     for file in raw_files:
         filename = file.filename
         file_bytes = await file.read()

@@ -1,4 +1,4 @@
-# Cost Estimator API
+﻿# Cost Estimator API
 
 FastAPI backend for engineering diagram cost estimation.
 
@@ -39,7 +39,7 @@ http://127.0.0.1:8010
 - `GET /vertex-config` compatibility alias
 - `POST /diagram-preview` multipart form with `diagram`
 - `POST /extract-dimensions` multipart form with `diagram`
-- `POST /estimate` multipart form with `diagram` plus costing parameters
+- `POST /calculate-cost-breakdown` JSON endpoint that recalculates structured costing from extracted data
 
 ## Gemini API Extraction
 
@@ -65,3 +65,4 @@ http://127.0.0.1:8010/gemini-config
 ```
 
 The extraction endpoint sends the uploaded drawing image to Gemini and asks for JSON dimensions. The costing endpoint still uses local Python formulas.
+

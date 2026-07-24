@@ -24,6 +24,6 @@ COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-COPY test.py ./test.py
+COPY main.py ./main.py
 
-CMD ["sh", "-c", "uvicorn test:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["sh","-c","uvicorn main:app --host 0.0.0.0 --port ${PORT}"]
