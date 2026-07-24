@@ -1,5 +1,3 @@
-
-
 import os
 import io
 import json
@@ -40,15 +38,17 @@ load_dotenv()
 # =====================================================================
 class ExtractedComponent(BaseModel):
     part_number: str
-    component_type: str = Field(description="Must be exactly 'perforated_tray', 'tapered_gusset', 'tube', 'sheet', or 'accessory'")
+    component_type: str = Field(description="Must be explicitly 'perforated_tray', 'tapered_gusset', 'tube', 'sheet', 'accessory', or 'screwing_piece'")
+    description: Optional[str] = Field(default="", description="Exact text from the blueprint BOM description column, e.g., 'CHAIR ANGLE-RH', 'CHAIR ANGLE-LH', or 'SCREWING PIECE Ø 20X45'")
     per_set_qty: int
-    part_length_mm: float
-    part_width_mm: float
+    part_length_mm: float = Field(description="Height, linear length, or major dimension of the part")
+    part_width_mm: float = Field(description="Width, outer diameter, or minor dimension of the part")
     thickness_mm: float
     number_of_bends_per_part: int
     estimated_punched_slots_count: int = Field(default=0, description="Total count of punched slots/perforations visible on surface area")
     is_tapered_profile: bool = Field(default=False, description="True if part features a non-rectangular trapezoidal or triangular cut path")
     weld_seams_count: int = Field(default=0, description="Total number of structural weld locations required")
+    
 
 class ExtractedBOMAssembly(BaseModel):
     current_drawing_id: str = Field(description="Primary drawing identifier extracted from title block.")
@@ -56,6 +56,7 @@ class ExtractedBOMAssembly(BaseModel):
     total_estimated_welding_length_mm: float
     referenced_drawing_ids: List[str] = Field(default=[])
     target_blueprint_weight_kg: Optional[float] = Field(default=None)
+    preferred_assembly_side: str = Field(default="left", description="Indicates preferred side orientation or mounting bias, e.g., 'left' or 'right' based on drawing notes.")
 
 # Global runtime state caches
 client = None
@@ -63,10 +64,10 @@ session_cache: Dict[str, Dict[str, Any]] = {}
 GLOBAL_BLUEPRINT_CACHE: Dict[str, Dict[str, Any]] = {}
 
 # =====================================================================
-# 2. CALIBRATED MANUFACTURING OPERATIONS & PRICING ENGINE (UNTOUCHED)
+# 2. CALIBRATED MANUFACTURING OPERATIONS & PRICING ENGINE
 # =====================================================================
 def premium_calculate_painting_cost(comp_type: str, length_mm: float, width_mm: float, qty: int, base_rate_sqm: float) -> float:
-    if comp_type.lower() in ["accessory"]:
+    if comp_type.lower() in ["accessory", "screwing_piece"]:
         return 0.00
     surface_area_sqm = (2 * length_mm * width_mm) / 1000000.0
     return round(surface_area_sqm * base_rate_sqm * qty, 2)
@@ -87,16 +88,14 @@ def premium_generate_process_sequence_advisory(comp_type: str, slots: int, bends
         return f"ROUTING: [1] Laser cut perimeter blank -> [2] Turret punch matrix tool path for {slots} slots -> [3] CNC brake press forming ({bends} folds) -> [4] Passivation wash down."
     elif comp_type.lower() == "tapered_gusset" or is_tapered:
         return f"ROUTING: [1] Interlocked nesting layout configuration to protect grain structure -> [2] Precision linear laser vector profile cut -> [3] Edge debur cell."
+    elif comp_type.lower() == "screwing_piece":
+        return "ROUTING: [1] Bar stock CNC lathe turning -> [2] Metric threading operation -> [3] De-burring and wash inspection."
     return "ROUTING: [1] Standard raw bundle stock saw feed -> [2] Edge clean cycle -> [3] Quality check queue."
 
 # =====================================================================
 # 3. MODULAR 2D & UPGRADED 3D CAD GENERATION FUNCTIONS (PYVISTA)
 # =====================================================================
 def generate_cad_2d_flat_layout(all_aggregated_components: List[Dict[str, Any]]) -> io.BytesIO:
-    """
-    Modular 2D CAD Nesting Generator:
-    Corrects part spacing across the 2500x1250mm plate and properly distributes linear tube stock cuts.
-    """
     fig = Figure(figsize=(12, 11))
     
     # --- SUBPLOT 1: FLAT PLATE NESTING MAP ---
@@ -205,107 +204,174 @@ def generate_cad_2d_flat_layout(all_aggregated_components: List[Dict[str, Any]])
     img_buffer.seek(0)
     return img_buffer
 
-def generate_cad_3d_assembly_model(drawing_components: List[Dict[str, Any]]) -> io.BytesIO:
-    """
-    Hyper-Realistic Workshop CAD Generator using PyVista:
-    Mirrors real fabrication details from workshop video (mill steel finish, welded fastener nuts,
-    true U-handle, and flush base/top plates).
-    """
-    plotter = pv.Plotter(off_screen=True, window_size=[1200, 900])
+def determine_side_by_length(drawing_components: List[Dict[str, Any]]) -> str:
+    total_len_left = 0.0
+    total_len_right = 0.0
+    
+    for c in drawing_components:
+        length = float(c.get("length_mm", 0.0))
+        cutting_len = float(c.get("laser_cutting_length_mm", 0.0))
+        desc = str(c.get("description", "")).upper()
+        
+        if "LH" in desc or "LEFT" in desc:
+            total_len_left += (length + cutting_len)
+        elif "RH" in desc or "RIGHT" in desc:
+            total_len_right += (length + cutting_len)
+        else:
+            total_len_right += length
+
+    if total_len_left > total_len_right:
+        return "left"
+    else:
+        return "right"
+
+def generate_cad_3d_assembly_model(drawing_components: List[Dict[str, Any]], drawing_id: str = "") -> io.BytesIO:
+    plotter = pv.Plotter(off_screen=True, window_size=[1200, 1600])
     plotter.set_background("#EAECEE") 
 
     is_column = any("tube" in str(c.get("component_type", "")).lower() or "column" in str(c.get("part_number", "")).lower() for c in drawing_components)
 
     if is_column:
-        # --- SUPPORT COLUMN (DRAWING 2 WORKSHOP SPEC) ---
-        col_height = 500.0
         col_width = 45.0
+        tube_length = 2581.0  
+        base_arm_length = 420.0 
         
-        # 1. Base Mounting Plate with corner detailing
-        base_plate = pv.Box(bounds=(-55.0, 55.0, -75.0, 75.0, 0.0, 10.0))
-        plotter.add_mesh(base_plate, color="#95A5A6", specular=0.4, specular_power=10, smooth_shading=True)
+        has_lh = False
+        has_rh = False
+        explicit_tag_found = False
+        
+        for c in drawing_components:
+            desc = str(c.get("description", "")).upper()
+            p_num = str(c.get("part_number", "")).upper()
+            c_type = str(c.get("component_type", "")).upper()
+            
+            if "TUBE" in c_type:
+                l_val = float(c.get("length_mm", 0.0))
+                if l_val > 2000.0:
+                    tube_length = l_val
 
-        # 2. Central Square Tube Column (Mill steel brushed finish)
-        column = pv.Box(bounds=(-col_width/2, col_width/2, -col_width/2, col_width/2, 10.0, col_height))
-        plotter.add_mesh(column, color="#BDC3C7", specular=0.7, specular_power=30, smooth_shading=True)
+            if "-LH" in p_num or "-LH" in desc or desc.endswith(" LH") or " LH " in desc or "CHAIR ANGLE-LH" in desc:
+                has_lh = True
+                explicit_tag_found = True
+            if "-RH" in p_num or "-RH" in desc or desc.endswith(" RH") or " RH " in desc or "CHAIR ANGLE-RH" in desc:
+                has_rh = True
+                explicit_tag_found = True
 
-        # 3. Top Capping Plate
-        top_plate = pv.Box(bounds=(-45.0, 45.0, -45.0, 45.0, col_height, col_height + 10.0))
-        plotter.add_mesh(top_plate, color="#95A5A6", specular=0.4, specular_power=10, smooth_shading=True)
+        if not explicit_tag_found:
+            preferred_side = determine_side_by_length(drawing_components)
+            if preferred_side == "left":
+                has_lh = True
+                has_rh = False
+            else:
+                has_lh = False
+                has_rh = True
 
-        # 4. Flush Welded Vertical Triangular Stiffener Plate (Zero Gap at Base)
-        stiffener_thickness = 8.0
-        stiffener_width = 35.0
-        stiffener_height = 95.0
-        stiffener_fin = pv.Box(
-            bounds=(-stiffener_width/2, stiffener_width/2, -col_width/2 - stiffener_thickness, -col_width/2, 10.0, 10.0 + stiffener_height)
-        )
-        plotter.add_mesh(stiffener_fin, color="#566573", specular=0.6, specular_power=20, smooth_shading=True)
+        # Materials with clear visual contrast
+        satin_steel = dict(pbr=True, metallic=0.50, roughness=0.42, color="#D8E2EC", smooth_shading=True)
+        hardware_steel = dict(pbr=True, metallic=0.85, roughness=0.20, color="#2C3E50", smooth_shading=True) # Dark zinc/blackened bolts
 
-        # 5. True Bent U-Shaped Tubular Handle
-        handle_z_start = col_height * 0.38
-        handle_z_end = col_height * 0.62
-        handle_outreach = 28.0
-        tube_radius = 6.0
+        # 1. Base Mounting Plate
+        base_plate = pv.Box(bounds=(-55.0, 55.0, -75.0, 75.0, 0.0, 5.0))
+        plotter.add_mesh(base_plate, **satin_steel)
 
-        grip_cylinder = pv.Cylinder(
-            center=(col_width/2 + handle_outreach, 0.0, (handle_z_start + handle_z_end)/2),
-            direction=(0, 0, 1),
-            radius=tube_radius,
-            height=(handle_z_end - handle_z_start),
-            resolution=30
-        )
-        stub_bottom = pv.Cylinder(
-            center=(col_width/2 + handle_outreach/2, 0.0, handle_z_start),
-            direction=(1, 0, 0),
-            radius=tube_radius,
-            height=handle_outreach,
-            resolution=20
-        )
-        stub_top = pv.Cylinder(
-            center=(col_width/2 + handle_outreach/2, 0.0, handle_z_end),
-            direction=(1, 0, 0),
-            radius=tube_radius,
-            height=handle_outreach,
-            resolution=20
-        )
-        plotter.add_mesh(grip_cylinder, color="#34495E", specular=0.8, specular_power=35, smooth_shading=True)
-        plotter.add_mesh(stub_bottom, color="#34495E", specular=0.8, specular_power=35, smooth_shading=True)
-        plotter.add_mesh(stub_top, color="#34495E", specular=0.8, specular_power=35, smooth_shading=True)
+        # 2. Main Square Tube
+        column = pv.Box(bounds=(-col_width/2, col_width/2, -col_width/2, col_width/2, 5.0, 5.0 + tube_length))
+        plotter.add_mesh(column, **satin_steel)
 
-        # 6. Welded Fastener Nuts / Threaded Inserts on Tube Face (Matching video timestamp 0:10-0:15)
-        nut_z_pos = col_height * 0.22
-        nut_1 = pv.Cylinder(center=(0.0, -col_width/2 - 4.0, nut_z_pos), direction=(0, 1, 0), radius=8.0, height=8.0, resolution=24)
-        nut_2 = pv.Cylinder(center=(0.0, -col_width/2 - 4.0, nut_z_pos + 25.0), direction=(0, 1, 0), radius=8.0, height=8.0, resolution=24)
-        plotter.add_mesh(nut_1, color="#2C3E50", specular=0.9, specular_power=40, smooth_shading=True)
-        plotter.add_mesh(nut_2, color="#2C3E50", specular=0.9, specular_power=40, smooth_shading=True)
+        # 3. Top Plate
+        top_plate = pv.Box(bounds=(-62.5, 62.5, -62.5, 62.5, 5.0 + tube_length, 5.0 + tube_length + 5.0))
+        plotter.add_mesh(top_plate, **satin_steel)
+
+        # 4. Base Chair Angles
+        base_arm_h_base = 150.0
+        base_arm_h_tip = 45.0
+        base_arm_w = 45.0
+        base_z_start = 5.0
+
+        active_directions = []
+        if has_rh: active_directions.append(-1)  
+        if has_lh: active_directions.append(1)   
+
+        for x_dir in active_directions:
+            inner_x = (col_width / 2) * x_dir
+            outer_x = (col_width / 2 + base_arm_length) * x_dir
+            
+            pts = np.array([
+                [inner_x, 0, base_z_start],
+                [outer_x, 0, base_z_start + base_arm_h_base - base_arm_h_tip],
+                [outer_x, 0, base_z_start + base_arm_h_base],
+                [inner_x, 0, base_z_start + base_arm_h_base]
+            ])
+
+            profile_face = pv.PolyData(pts, np.array([4, 0, 1, 2, 3]))
+            arm_mesh = profile_face.extrude((0, base_arm_w, 0), capping=True)
+            arm_mesh.translate((0, -base_arm_w/2, 0), inplace=True)
+            plotter.add_mesh(arm_mesh, **satin_steel)
+
+            for frac in [0.35, 0.75]:
+                hx = inner_x + (base_arm_length * frac * x_dir)
+                hole = pv.Cylinder(center=(hx, 0, base_z_start + base_arm_h_base + 0.5), direction=(0,0,1), radius=4.5, height=2.0, resolution=20)
+                plotter.add_mesh(hole, color="#1A1A1A", smooth_shading=True)
+
+        # 5. CLEARLY VISIBLE PROTRUDING SCREWING PIECES / BOSSES (Item 6)
+        z_holes = [tube_length * 0.3, tube_length * 0.38, tube_length * 0.64, tube_length * 0.72]
+        for z in z_holes:
+            # Protruding threaded boss body
+            boss = pv.Cylinder(center=(0.0, -col_width/2 - 4.0, z), direction=(0, 1, 0), radius=9.0, height=8.0, resolution=30)
+            plotter.add_mesh(boss, color="#A0ABB5", pbr=True, metallic=0.6, roughness=0.3)
+            # Distinct dark bolt/screw head on top
+            bolt_head = pv.Cylinder(center=(0.0, -col_width/2 - 8.0, z), direction=(0, 1, 0), radius=5.5, height=4.0, resolution=20)
+            plotter.add_mesh(bolt_head, **hardware_steel)
+
+        # 6. Smooth Bent Handle
+        handle_z = tube_length * 0.65 
+        side_multiplier = -1.0 if has_rh else 1.0
+        
+        curve_points = np.array([
+            [0.0, (col_width/2) * side_multiplier, handle_z],
+            [0.0, (70.0) * side_multiplier, handle_z],
+            [0.0, (70.0) * side_multiplier, handle_z + 200.0],
+            [0.0, (col_width/2) * side_multiplier, handle_z + 200.0]
+        ])
+        spline = pv.Spline(curve_points, 50)
+        handle_tube = spline.tube(radius=9.5, n_sides=30)
+        plotter.add_mesh(handle_tube, color="#2C3E50", pbr=True, metallic=0.7, roughness=0.4)
 
     else:
-        # --- DRAWING 1: PERFORATED TRAY ---
+        # Fallback Tray Rendering...
         tray_length = 600.0
         tray_width = 200.0
+        for c in drawing_components:
+            if float(c.get("length_mm", 0.0)) > 0:
+                tray_length = float(c.get("length_mm", 600.0))
+            if float(c.get("width_mm", 0.0)) > 0:
+                tray_width = float(c.get("width_mm", 200.0))
+
         tray_height = 30.0
+        tray_mat = dict(pbr=True, metallic=0.7, roughness=0.4, color="#BDC3C7")
 
         tray_deck = pv.Box(bounds=(-tray_length/2, tray_length/2, -tray_width/2, tray_width/2, 0.0, tray_height))
-        plotter.add_mesh(tray_deck, color="#BDC3C7", specular=0.6, specular_power=20, smooth_shading=True)
-
+        plotter.add_mesh(tray_deck, **tray_mat)
         left_flange = pv.Box(bounds=(-tray_length/2, tray_length/2, -tray_width/2 - 2.0, -tray_width/2, 0.0, tray_height))
         right_flange = pv.Box(bounds=(-tray_length/2, tray_length/2, tray_width/2, tray_width/2 + 2.0, 0.0, tray_height))
-        plotter.add_mesh(left_flange, color="#95A5A6", specular=0.5, specular_power=15)
-        plotter.add_mesh(right_flange, color="#95A5A6", specular=0.5, specular_power=15)
+        plotter.add_mesh(left_flange, **tray_mat)
+        plotter.add_mesh(right_flange, **tray_mat)
 
-    # Studio Lighting & Camera Framing
-    plotter.add_light(pv.Light(position=(500, -600, 400), intensity=0.9))
-    plotter.add_light(pv.Light(position=(-300, 500, 300), intensity=0.6))
+    plotter.enable_shadows()
+    plotter.add_light(pv.Light(position=(3000, -3000, 3000), focal_point=(0, 0, 1300), intensity=1.2, color='white'))
+    plotter.add_light(pv.Light(position=(-3000, 3000, 2000), focal_point=(0, 0, 1300), intensity=0.8, color='#FFFFFF'))
+    plotter.add_light(pv.Light(position=(0, 4000, 2000), focal_point=(0, 0, 1300), intensity=0.6, color='#FFFFFF'))
+    
     plotter.camera_position = 'iso'
-    plotter.camera.zoom(1.1)
+    plotter.reset_camera()
+    plotter.camera.zoom(1.2)
 
     img_array = plotter.screenshot(return_img=True)
     plotter.close()
 
     img = Image.fromarray(img_array)
     img_buffer = io.BytesIO()
-    img.save(img_buffer, format='PNG')
+    img.save(img_buffer, format='PNG', optimize=True)
     img_buffer.seek(0)
     return img_buffer
 
@@ -355,10 +421,12 @@ async def async_analyze_single_drawing(file_bytes: bytes, filename: str) -> Dict
 
     prompt = """
     You are an expert industrial engineering drawing analyst. Extract all parts matching design configuration metadata parameters perfectly:
-    - Map components to 'perforated_tray', 'tapered_gusset', 'tube', 'sheet', or 'accessory'.
+    - Map components to 'perforated_tray', 'tapered_gusset', 'tube', 'sheet', 'accessory', or 'screwing_piece'.
     - Carefully capture length, width, thickness, and quantity counts.
+    - Identify cylindrical turned components like 'SCREWING PIECE Ø 20X45' (Item 6) by mapping diameter to width_mm and height/length to length_mm.
     - Identify and output 'estimated_punched_slots_count' if perforation arrays are visible.
     - Set 'is_tapered_profile' to True for angular/triangular/trapezoidal gusset cuts.
+    - Check blueprint notes for any left/right side mounting preference or bias, and set 'preferred_assembly_side' to 'left' or 'right'.
     - Structure output inside designated JSON schema rules without exceptions.
     """
 
@@ -399,6 +467,12 @@ async def async_analyze_single_drawing(file_bytes: bytes, filename: str) -> Dict
             net_volume = (L * W * t) * 0.50
             n_wt = net_volume * STEEL_DENSITY_KG_MM3
             g_wt = n_wt * 1.06
+        elif comp_type == "screwing_piece":
+            # Cylindrical mass calculation: pi * r^2 * h
+            radius_mm = W / 2.0
+            net_volume = 3.14159 * (radius_mm ** 2) * L
+            n_wt = net_volume * STEEL_DENSITY_KG_MM3
+            g_wt = n_wt * 1.05
         else:
             net_volume = L * W * t
             n_wt = net_volume * STEEL_DENSITY_KG_MM3
@@ -427,10 +501,11 @@ async def async_analyze_single_drawing(file_bytes: bytes, filename: str) -> Dict
         
         geom_metrics = premium_calculate_advanced_geometries(uc["comp_type"], uc["L"], uc["W"], bom_dataset.get("total_estimated_welding_length_mm", 0.0), uc["is_tapered"])
         advisory_msg = premium_generate_process_sequence_advisory(uc["comp_type"], uc["slots"], uc["item"].get("number_of_bends_per_part", 0), uc["is_tapered"])
-
+        
         calibrated_components.append({
             "part_number": uc["item"].get("part_number", "UNKNOWN"),
             "component_type": uc["comp_type"],
+            "description": uc["item"].get("description", ""),
             "per_set_qty": qty,
             "length_mm": uc["L"],
             "width_mm": uc["W"],
@@ -460,7 +535,7 @@ async def async_analyze_single_drawing(file_bytes: bytes, filename: str) -> Dict
     return compiled_result
 
 # =====================================================================
-# 6. APPLICATION WORKSPACE INTERFACE DEPLOYMENT (WITH PER-DRAWING 3D SELECTORS)
+# 6. APPLICATION WORKSPACE INTERFACE DEPLOYMENT
 # =====================================================================
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend_workspace():
@@ -649,7 +724,6 @@ async def serve_frontend_workspace():
                         lnk2DDownload.href = '/generate-premium-2d-visual/' + activeSessionId;
                         lnk2DDownload.style.display = 'block';
                         
-                        // Populate 3D drawing selector tabs
                         buildDrawingTabs();
                     }
                 };
@@ -709,7 +783,7 @@ async def serve_frontend_workspace():
 async def initialize_async_batch(raw_files: List[UploadFile] = File(...)):
     session_id = uuid.uuid4().hex
     file_records = []
-    
+
     for file in raw_files:
         filename = file.filename
         file_bytes = await file.read()
@@ -771,7 +845,7 @@ async def stream_live_calculations(session_id: str):
         try:
             wb = openpyxl.Workbook()
             
-            # SHEET 3: PARAMETRIC RATES (UNTOUCHED BASELINES)
+            # SHEET 3: PARAMETRIC RATES
             ws3 = wb.active
             ws3.title = "Material & Process Rates"
             ws3.views.sheetView[0].showGridLines = True
@@ -798,6 +872,7 @@ async def stream_live_calculations(session_id: str):
             PERFORATED_SHEET_RATE = 230.00
             TAPERED_GUSSET_RATE = 210.00
             ACCESSORY_RATE = 130.00
+            SCREWING_PIECE_RATE = 240.00
             LASER_CUT_RATE = 35.00
             TURRET_PUNCH_HIT_RATE = 0.40
             BEND_RATE = 6.00
@@ -811,6 +886,7 @@ async def stream_live_calculations(session_id: str):
                 ("Perforated Tray Sheet Rate (Per Kg)", PERFORATED_SHEET_RATE),
                 ("Tapered Gusset/Bracket Rate (Per Kg)", TAPERED_GUSSET_RATE),
                 ("Solid Accessory Components Rate (Per Kg)", ACCESSORY_RATE),
+                ("Screwing Piece / Machined Boss Rate (Per Kg)", SCREWING_PIECE_RATE),
                 ("High Velocity Laser Cut Path Fee (Per Meter)", LASER_CUT_RATE),
                 ("Turret Punch Perforation Fee (Per Stroke)", TURRET_PUNCH_HIT_RATE),
                 ("CNC Brake Press Bending Fee (Per Stroke)", BEND_RATE),
@@ -820,7 +896,7 @@ async def stream_live_calculations(session_id: str):
             ]
             for p_desc, p_val in default_pricing_ledger:
                 ws3.append([p_desc, p_val])
-            for r_idx in range(2, 12):
+            for r_idx in range(2, 13):
                 ws3.cell(row=r_idx, column=1).font = font_body; ws3.cell(row=r_idx, column=1).border = thin_border
                 ws3.cell(row=r_idx, column=2).font = font_body; ws3.cell(row=r_idx, column=2).border = thin_border; ws3.cell(row=r_idx, column=2).alignment = right_align
                 ws3.cell(row=r_idx, column=2).number_format = '#,##0.00'
@@ -869,6 +945,8 @@ async def stream_live_calculations(session_id: str):
                         rate = PERFORATED_SHEET_RATE
                     elif c_type == "tapered_gusset":
                         rate = TAPERED_GUSSET_RATE
+                    elif c_type == "screwing_piece":
+                        rate = SCREWING_PIECE_RATE
                     elif c_type in ["sheet", "chair angle", "chair_angle"]:
                         rate = SHEET_RATE
                     else:
@@ -988,29 +1066,101 @@ async def stream_live_calculations(session_id: str):
                 cell.font = font_total; cell.fill = gold_fill; cell.border = double_border
                 if c >= 8: cell.alignment = right_align
 
-            # SHEET 4: ADVANCED NESTING & PRODUCTION OPTIMIZATION STRATEGY (4TH SHEET)
+            # SHEET 4: ADVANCED NESTING & PRODUCTION OPTIMIZATION STRATEGY
             ws4 = wb.create_sheet(title="Nesting Optimization Strategy", index=3)
             ws4.views.sheetView[0].showGridLines = True
             
-            ws4.append(["Optimization Dimension / Process", "Standard Single-Drawing Approach", "Proposed Multi-Drawing Global Optimization", "Estimated Scrap / Cost Savings"])
+            headers = [
+                "Drawing Number", "Material Type", "Part Dimensions (mm)", 
+                "Raw Material Size", "Nesting Algorithm", 
+                "Yield (Parts per Raw)", "Scrap Rate (%)", "Optimization Strategy"
+            ]
+            ws4.append(headers)
+            
             for cell in ws4[1]:
-                cell.fill = navy_fill; cell.font = font_header; cell.alignment = center_align; cell.border = thin_border
+                cell.fill = navy_fill
+                cell.font = font_header
+                cell.alignment = center_align
+                cell.border = thin_border
             ws4.row_dimensions[1].height = 28
 
-            optimization_strategies = [
-                ("Tube / Linear Stock Cutting (1D Bin Packing)", "Cut pipes drawing-by-drawing, resulting in isolated offcut drop waste.", "Pool all tube requirements across all drawings into a global 1D bin-packing matrix.", "Scrap reduced to < 3% (Saves ~5-7% raw tube cost)"),
-                ("Tapered Gusset Nesting (2D Interlocking)", "Nest gussets individually within single drawing boundaries.", "Pair opposing triangular gussets back-to-back in an interlocked puzzle layout.", "Plate utilization boosted from 75% to 90%+"),
-                ("Multi-Tube Bundle Sawing", "Process structural tubes one by one through saw/laser cells.", "Bundle 2 to 3 identical profile tubes together for simultaneous multi-cuts.", "Handling labor cut by 50% & higher dimensional repeatability"),
-                ("Mixed-Thickness Sheet Pooling", "Nest parts strictly per individual drawing file.", "Group all flat plates by thickness across the entire multi-drawing package.", "Absorbs small drop zones with small brackets/screwing pieces")
-            ]
+            STD_TUBE_LENGTH = 6000.0  
+            STD_SHEET_L = 2500.0      
+            STD_SHEET_W = 1250.0
+            KERF = 3.0                
 
-            for row_idx, strat in enumerate(optimization_strategies, start=2):
-                ws4.append(list(strat))
-                for col_idx in range(1, 5):
+            row_idx = 2
+            for dwg in session_data["compiled_results"]:
+                dwg_no = dwg.get("drawing_id", "Unknown")
+                components = dwg.get("components", [])
+                
+                is_column = any("tube" in str(c.get("component_type", "")).lower() or "column" in str(c.get("part_number", "")).lower() for c in components)
+                
+                if is_column:
+                    part_length = 500.0  
+                    parts_per_tube = int(STD_TUBE_LENGTH // (part_length + KERF))
+                    used_length = parts_per_tube * (part_length + KERF)
+                    remnant_drop = STD_TUBE_LENGTH - used_length
+                    scrap_percent = round((remnant_drop / STD_TUBE_LENGTH) * 100, 2)
+                    
+                    row_data = [
+                        dwg_no,
+                        "Square Tube / Profile",
+                        f"{part_length} L",
+                        f"{STD_TUBE_LENGTH} mm Length",
+                        "1D Linear Bin Packing",
+                        parts_per_tube,
+                        f"{scrap_percent}%",
+                        f"Standard linear cut. Yields {parts_per_tube} pieces per standard 6m tube, leaving a {remnant_drop}mm remnant drop."
+                    ]
+                else:
+                    part_l = 600.0 
+                    part_w = 200.0
+                    
+                    nx1 = int(STD_SHEET_L // (part_l + KERF))
+                    ny1 = int(STD_SHEET_W // (part_w + KERF))
+                    yield_1 = nx1 * ny1
+                    
+                    nx2 = int(STD_SHEET_L // (part_w + KERF))
+                    ny2 = int(STD_SHEET_W // (part_l + KERF))
+                    yield_2 = nx2 * ny2
+                    
+                    best_yield = max(yield_1, yield_2)
+                    area_used = best_yield * (part_l * part_w)
+                    total_area = STD_SHEET_L * STD_SHEET_W
+                    scrap_percent = round(((total_area - area_used) / total_area) * 100, 2)
+                    
+                    orientation_note = "Standard" if yield_1 >= yield_2 else "Rotated 90°"
+                    
+                    row_data = [
+                        dwg_no,
+                        "SS Sheet / Plate",
+                        f"{part_l} x {part_w}",
+                        f"{STD_SHEET_L} x {STD_SHEET_W} mm",
+                        "2D Guillotine Optimization",
+                        best_yield,
+                        f"{scrap_percent}%",
+                        f"Best yield achieved using {orientation_note} orientation. Nests {best_yield} parts on a standard 8x4 sheet."
+                    ]
+
+                ws4.append(row_data)
+                
+                for col_idx in range(1, len(headers) + 1):
                     c_cell = ws4.cell(row=row_idx, column=col_idx)
                     c_cell.font = font_body
                     c_cell.border = thin_border
-                    c_cell.alignment = left_align if col_idx in [1, 2, 3] else center_align
+                    c_cell.alignment = left_align if col_idx == 8 else center_align
+                
+                row_idx += 1
+
+            ws4.column_dimensions['A'].width = 18
+            ws4.column_dimensions['B'].width = 22
+            ws4.column_dimensions['C'].width = 22
+            ws4.column_dimensions['D'].width = 25
+            ws4.column_dimensions['E'].width = 25
+            ws4.column_dimensions['F'].width = 22
+            ws4.column_dimensions['G'].width = 15
+            ws4.column_dimensions['H'].width = 65
 
             for ws in [ws1, ws2, ws3, ws4]:
                 for col in ws.columns:
