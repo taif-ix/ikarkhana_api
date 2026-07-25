@@ -18,17 +18,13 @@ import numpy as np
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
-# Modern Google GenAI framework dependencies
 from google import genai
 from google.genai import types
 
-# 2D Layout rendering components
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle, Polygon
 
-# Upgraded 3D CAD Visualization Engine (PyVista / VTK)
 import pyvista as pv
-# Force headless rendering mode for server environments
 pv.OFF_SCREEN = True
 
 load_dotenv()
@@ -38,13 +34,14 @@ load_dotenv()
 # =====================================================================
 class ExtractedComponent(BaseModel):
     part_number: str
-    component_type: str = Field(description="Must be explicitly 'perforated_tray', 'tapered_gusset', 'tube', 'sheet', 'accessory', or 'screwing_piece'")
-    description: Optional[str] = Field(default="", description="Exact text from the blueprint BOM description column, e.g., 'CHAIR ANGLE-RH', 'CHAIR ANGLE-LH', or 'SCREWING PIECE Ø 20X45'")
+    component_type: str = Field(description="Must be explicitly 'perforated_tray', 'tapered_gusset', 'tube', 'sheet', 'accessory', 'screwing_piece', or 'handle'")
+    description: Optional[str] = Field(default="", description="Exact text from BOM description column, e.g., 'CHAIR ANGLE-RH', 'HANDLE', or 'SCREWING PIECE Ø 20X45'")
     per_set_qty: int
-    part_length_mm: float = Field(description="Height, linear length, or major dimension of the part")
+    part_length_mm: float = Field(description="Height, linear length, or vertical back height of the part")
     part_width_mm: float = Field(description="Width, outer diameter, or minor dimension of the part")
-    thickness_mm: float
+    thickness_mm: float = Field(description="Exact material thickness extracted from drawing callout (e.g., 2mm for handle)")
     number_of_bends_per_part: int
+    position_z_mm: float = Field(default=5.0, description="Exact vertical mounting distance or offset from the bottom base plate in mm as shown in drawing dimensions")
     estimated_punched_slots_count: int = Field(default=0, description="Total count of punched slots/perforations visible on surface area")
     is_tapered_profile: bool = Field(default=False, description="True if part features a non-rectangular trapezoidal or triangular cut path")
     weld_seams_count: int = Field(default=0, description="Total number of structural weld locations required")
@@ -58,7 +55,6 @@ class ExtractedBOMAssembly(BaseModel):
     target_blueprint_weight_kg: Optional[float] = Field(default=None)
     preferred_assembly_side: str = Field(default="left", description="Indicates preferred side orientation or mounting bias, e.g., 'left' or 'right' based on drawing notes.")
 
-# Global runtime state caches
 client = None
 session_cache: Dict[str, Dict[str, Any]] = {}
 GLOBAL_BLUEPRINT_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -77,7 +73,7 @@ def premium_calculate_bending_cost(bends: int, qty: int, base_rate_stroke: float
 
 def premium_calculate_advanced_geometries(comp_type: str, L: float, W: float, total_weld_mm: float, is_tapered: bool) -> Dict[str, float]:
     multiplier = 1.25 if is_tapered else 1.0
-    cut_length_mm = 2 * (L + W) * multiplier if comp_type.lower() in ["perforated_tray", "tapered_gusset", "sheet"] else 0.0
+    cut_length_mm = 2 * (L + W) * multiplier if comp_type.lower() in ["perforated_tray", "tapered_gusset", "sheet", "handle"] else 0.0
     return {
         "cutting_length_mm": round(cut_length_mm, 2),
         "welding_length_mm": round(total_weld_mm, 2)
@@ -88,17 +84,18 @@ def premium_generate_process_sequence_advisory(comp_type: str, slots: int, bends
         return f"ROUTING: [1] Laser cut perimeter blank -> [2] Turret punch matrix tool path for {slots} slots -> [3] CNC brake press forming ({bends} folds) -> [4] Passivation wash down."
     elif comp_type.lower() == "tapered_gusset" or is_tapered:
         return f"ROUTING: [1] Interlocked nesting layout configuration to protect grain structure -> [2] Precision linear laser vector profile cut -> [3] Edge debur cell."
+    elif comp_type.lower() == "handle":
+        return "ROUTING: [1] Flat strip laser blanking -> [2] Multi-stage radius brake forming -> [3] Fixture weld prep."
     elif comp_type.lower() == "screwing_piece":
         return "ROUTING: [1] Bar stock CNC lathe turning -> [2] Metric threading operation -> [3] De-burring and wash inspection."
     return "ROUTING: [1] Standard raw bundle stock saw feed -> [2] Edge clean cycle -> [3] Quality check queue."
 
 # =====================================================================
-# 3. MODULAR 2D & UPGRADED 3D CAD GENERATION FUNCTIONS (PYVISTA)
+# 3. MODULAR 2D & DUAL-ANGLE 3D CAD GENERATION FUNCTIONS
 # =====================================================================
 def generate_cad_2d_flat_layout(all_aggregated_components: List[Dict[str, Any]]) -> io.BytesIO:
     fig = Figure(figsize=(12, 11))
     
-    # --- SUBPLOT 1: FLAT PLATE NESTING MAP ---
     ax1 = fig.add_subplot(211)
     ax1.set_title("Aggregated Multi-Drawing 2D Nesting & Yield Map (Standard 2500x1250mm Plate Stock)", fontsize=11, fontweight='bold', color='#1B365D')
     
@@ -118,7 +115,7 @@ def generate_cad_2d_flat_layout(all_aggregated_components: List[Dict[str, Any]])
         is_tapered = c.get("is_tapered", False)
         part_no = str(c.get("part_number", str(idx)))
         
-        if c_type in ["perforated_tray", "tapered_gusset", "sheet"] and L > 0 and W > 0:
+        if c_type in ["perforated_tray", "tapered_gusset", "sheet", "handle"] and L > 0 and W > 0:
             has_flat_parts = True
             for _ in range(min(qty, 3)):
                 if current_x + L > 2420:
@@ -168,7 +165,6 @@ def generate_cad_2d_flat_layout(all_aggregated_components: List[Dict[str, Any]])
     ax1.set_ylabel("Y Dimension Vector Bounds (mm)", fontsize=9, fontweight='bold')
     ax1.grid(True, linestyle=':', alpha=0.4)
 
-    # --- SUBPLOT 2: LINEAR TUBE STOCK TRACKS ---
     ax2 = fig.add_subplot(212)
     ax2.set_title("Aggregated Linear Profile Stock Run Configurations (6000mm Stock Tracks)", fontsize=11, fontweight='bold', color='#1B365D')
     
@@ -225,16 +221,22 @@ def determine_side_by_length(drawing_components: List[Dict[str, Any]]) -> str:
     else:
         return "right"
 
-def generate_cad_3d_assembly_model(drawing_components: List[Dict[str, Any]], drawing_id: str = "") -> io.BytesIO:
+def generate_cad_3d_assembly_model(drawing_components: List[Dict[str, Any]], drawing_id: str = "", angle_mode: str = "handle") -> io.BytesIO:
     plotter = pv.Plotter(off_screen=True, window_size=[1200, 1600])
     plotter.set_background("#EAECEE") 
 
     is_column = any("tube" in str(c.get("component_type", "")).lower() or "column" in str(c.get("part_number", "")).lower() for c in drawing_components)
 
     if is_column:
-        col_width = 45.0
+        col_width = 45.0  # Square tube 45x45 mm profile width
         tube_length = 2581.0  
         base_arm_length = 420.0 
+        chair_angle_height = 305.0
+        
+        # Handle exact parametric extraction from drawing
+        handle_len = 200.0
+        handle_width = 70.0
+        handle_thick = 2.0
         
         has_lh = False
         has_rh = False
@@ -250,10 +252,30 @@ def generate_cad_3d_assembly_model(drawing_components: List[Dict[str, Any]], dra
                 if l_val > 2000.0:
                     tube_length = l_val
 
-            if "-LH" in p_num or "-LH" in desc or desc.endswith(" LH") or " LH " in desc or "CHAIR ANGLE-LH" in desc:
+            if "HANDLE" in desc or "HANDLE" in c_type:
+                l_val = float(c.get("length_mm", 0.0))
+                if l_val > 50.0:
+                    handle_len = l_val
+                w_val = float(c.get("width_mm", 0.0))
+                if w_val > 10.0:
+                    handle_width = w_val
+                t_val = float(c.get("thickness_mm", 0.0))
+                if t_val > 0.0:
+                    handle_thick = t_val
+
+            if "CHAIR" in desc or "GUSSET" in c_type or "ANGLE" in desc:
+                w_val = float(c.get("width_mm", 0.0)) or float(c.get("length_mm", 0.0))
+                if w_val > 50.0:
+                    base_arm_length = w_val
+                
+                h_val = float(c.get("length_mm", 0.0))
+                if h_val > 50.0 and h_val < 1000.0:
+                    chair_angle_height = h_val
+
+            if "-LH" in p_num or "-LH" in desc or "CHAIR ANGLE-LH" in desc:
                 has_lh = True
                 explicit_tag_found = True
-            if "-RH" in p_num or "-RH" in desc or desc.endswith(" RH") or " RH " in desc or "CHAIR ANGLE-RH" in desc:
+            if "-RH" in p_num or "-RH" in desc or "CHAIR ANGLE-RH" in desc:
                 has_rh = True
                 explicit_tag_found = True
 
@@ -266,15 +288,14 @@ def generate_cad_3d_assembly_model(drawing_components: List[Dict[str, Any]], dra
                 has_lh = False
                 has_rh = True
 
-        # Materials with clear visual contrast
         satin_steel = dict(pbr=True, metallic=0.50, roughness=0.42, color="#D8E2EC", smooth_shading=True)
-        hardware_steel = dict(pbr=True, metallic=0.85, roughness=0.20, color="#2C3E50", smooth_shading=True) # Dark zinc/blackened bolts
+        hardware_steel = dict(pbr=True, metallic=0.85, roughness=0.20, color="#2C3E50", smooth_shading=True)
 
         # 1. Base Mounting Plate
         base_plate = pv.Box(bounds=(-55.0, 55.0, -75.0, 75.0, 0.0, 5.0))
         plotter.add_mesh(base_plate, **satin_steel)
 
-        # 2. Main Square Tube
+        # 2. Main Square Tube (Non-round, exact 45x45mm square profile)
         column = pv.Box(bounds=(-col_width/2, col_width/2, -col_width/2, col_width/2, 5.0, 5.0 + tube_length))
         plotter.add_mesh(column, **satin_steel)
 
@@ -282,15 +303,15 @@ def generate_cad_3d_assembly_model(drawing_components: List[Dict[str, Any]], dra
         top_plate = pv.Box(bounds=(-62.5, 62.5, -62.5, 62.5, 5.0 + tube_length, 5.0 + tube_length + 5.0))
         plotter.add_mesh(top_plate, **satin_steel)
 
-        # 4. Base Chair Angles
-        base_arm_h_base = 150.0
+        # 4. Base Chair Angles (Strictly fixed at bottom base plate Z = 5.0mm with exact height)
+        base_arm_h_base = chair_angle_height  
         base_arm_h_tip = 45.0
         base_arm_w = 45.0
-        base_z_start = 5.0
+        base_z_start = 5.0  
 
         active_directions = []
-        if has_rh: active_directions.append(-1)  
-        if has_lh: active_directions.append(1)   
+        if has_rh: active_directions.append(1)   
+        if has_lh: active_directions.append(-1)  
 
         for x_dir in active_directions:
             inner_x = (col_width / 2) * x_dir
@@ -313,32 +334,33 @@ def generate_cad_3d_assembly_model(drawing_components: List[Dict[str, Any]], dra
                 hole = pv.Cylinder(center=(hx, 0, base_z_start + base_arm_h_base + 0.5), direction=(0,0,1), radius=4.5, height=2.0, resolution=20)
                 plotter.add_mesh(hole, color="#1A1A1A", smooth_shading=True)
 
-        # 5. CLEARLY VISIBLE PROTRUDING SCREWING PIECES / BOSSES (Item 6)
+        # 5. Visible Protruding Screwing Pieces / Hardware (Item 6)
         z_holes = [tube_length * 0.3, tube_length * 0.38, tube_length * 0.64, tube_length * 0.72]
         for z in z_holes:
-            # Protruding threaded boss body
             boss = pv.Cylinder(center=(0.0, -col_width/2 - 4.0, z), direction=(0, 1, 0), radius=9.0, height=8.0, resolution=30)
             plotter.add_mesh(boss, color="#A0ABB5", pbr=True, metallic=0.6, roughness=0.3)
-            # Distinct dark bolt/screw head on top
             bolt_head = pv.Cylinder(center=(0.0, -col_width/2 - 8.0, z), direction=(0, 1, 0), radius=5.5, height=4.0, resolution=20)
             plotter.add_mesh(bolt_head, **hardware_steel)
 
-        # 6. Smooth Bent Handle
-        handle_z = tube_length * 0.65 
-        side_multiplier = -1.0 if has_rh else 1.0
+        # 6. Exact Flat Strap / Rectangular Loop Handle Extracted from Drawing
+        handle_z_center = tube_length * 0.65 
+        side_multiplier = 1.0 if has_rh and not has_lh else -1.0
         
-        curve_points = np.array([
-            [0.0, (col_width/2) * side_multiplier, handle_z],
-            [0.0, (70.0) * side_multiplier, handle_z],
-            [0.0, (70.0) * side_multiplier, handle_z + 200.0],
-            [0.0, (col_width/2) * side_multiplier, handle_z + 200.0]
-        ])
-        spline = pv.Spline(curve_points, 50)
-        handle_tube = spline.tube(radius=9.5, n_sides=30)
-        plotter.add_mesh(handle_tube, color="#2C3E50", pbr=True, metallic=0.7, roughness=0.4)
+        # Build precise flat strip rectangular loop handle components based on extracted dimensions
+        h_bar_thickness = handle_thick  # e.g., 2mm
+        h_bar_depth = 12.0             # Width of the flat strap bar cross-section
+        
+        leg1 = pv.Box(bounds=(-h_bar_depth/2, h_bar_depth/2, (col_width/2 + handle_width - h_bar_thickness)*side_multiplier, (col_width/2 + handle_width)*side_multiplier, handle_z_center - handle_len/2, handle_z_center + handle_len/2))
+        leg2 = pv.Box(bounds=(-h_bar_depth/2, h_bar_depth/2, (col_width/2)*side_multiplier, (col_width/2 + h_bar_thickness)*side_multiplier, handle_z_center - handle_len/2, handle_z_center + handle_len/2))
+        top_bar = pv.Box(bounds=(-h_bar_depth/2, h_bar_depth/2, (col_width/2)*side_multiplier, (col_width/2 + handle_width)*side_multiplier, handle_z_center + handle_len/2 - h_bar_thickness, handle_z_center + handle_len/2))
+        bot_bar = pv.Box(bounds=(-h_bar_depth/2, h_bar_depth/2, (col_width/2)*side_multiplier, (col_width/2 + handle_width)*side_multiplier, handle_z_center - handle_len/2, handle_z_center - handle_len/2 + h_bar_thickness))
+        
+        plotter.add_mesh(leg1, color="#2C3E50", pbr=True, metallic=0.7, roughness=0.4)
+        plotter.add_mesh(leg2, color="#2C3E50", pbr=True, metallic=0.7, roughness=0.4)
+        plotter.add_mesh(top_bar, color="#2C3E50", pbr=True, metallic=0.7, roughness=0.4)
+        plotter.add_mesh(bot_bar, color="#2C3E50", pbr=True, metallic=0.7, roughness=0.4)
 
     else:
-        # Fallback Tray Rendering...
         tray_length = 600.0
         tray_width = 200.0
         for c in drawing_components:
@@ -362,9 +384,17 @@ def generate_cad_3d_assembly_model(drawing_components: List[Dict[str, Any]], dra
     plotter.add_light(pv.Light(position=(-3000, 3000, 2000), focal_point=(0, 0, 1300), intensity=0.8, color='#FFFFFF'))
     plotter.add_light(pv.Light(position=(0, 4000, 2000), focal_point=(0, 0, 1300), intensity=0.6, color='#FFFFFF'))
     
+    # Balanced zoom levels to fit the full assembly perfectly in the frame
     plotter.camera_position = 'iso'
     plotter.reset_camera()
-    plotter.camera.zoom(1.2)
+    if angle_mode == "bracket":
+        plotter.camera.azimuth = 135
+        plotter.camera.elevation = 15
+        plotter.camera.zoom(1.15)  # Balanced framing for bracket view
+    else:
+        plotter.camera.azimuth = 30
+        plotter.camera.elevation = 20
+        plotter.camera.zoom(1.10)  # Balanced framing for handle view
 
     img_array = plotter.screenshot(return_img=True)
     plotter.close()
@@ -421,9 +451,10 @@ async def async_analyze_single_drawing(file_bytes: bytes, filename: str) -> Dict
 
     prompt = """
     You are an expert industrial engineering drawing analyst. Extract all parts matching design configuration metadata parameters perfectly:
-    - Map components to 'perforated_tray', 'tapered_gusset', 'tube', 'sheet', 'accessory', or 'screwing_piece'.
-    - Carefully capture length, width, thickness, and quantity counts.
-    - Identify cylindrical turned components like 'SCREWING PIECE Ø 20X45' (Item 6) by mapping diameter to width_mm and height/length to length_mm.
+    - Map components to 'perforated_tray', 'tapered_gusset', 'tube', 'sheet', 'accessory', 'screwing_piece', or 'handle'.
+    - Carefully capture exact length, width, and thickness values directly from drawing dimensions and BOM tables (e.g., handle thickness, width, and height).
+    - Extract 'position_z_mm' by reading blueprint dimension lines indicating how far components are mounted from the bottom base plate.
+    - Identify cylindrical turned components like 'SCREWING PIECE Ø 20X45' (Item 6) by mapping diameter to width_mm and height to length_mm.
     - Identify and output 'estimated_punched_slots_count' if perforation arrays are visible.
     - Set 'is_tapered_profile' to True for angular/triangular/trapezoidal gusset cuts.
     - Check blueprint notes for any left/right side mounting preference or bias, and set 'preferred_assembly_side' to 'left' or 'right'.
@@ -467,8 +498,11 @@ async def async_analyze_single_drawing(file_bytes: bytes, filename: str) -> Dict
             net_volume = (L * W * t) * 0.50
             n_wt = net_volume * STEEL_DENSITY_KG_MM3
             g_wt = n_wt * 1.06
+        elif comp_type == "handle":
+            net_volume = L * W * t * 0.8
+            n_wt = net_volume * STEEL_DENSITY_KG_MM3
+            g_wt = n_wt * 1.05
         elif comp_type == "screwing_piece":
-            # Cylindrical mass calculation: pi * r^2 * h
             radius_mm = W / 2.0
             net_volume = 3.14159 * (radius_mm ** 2) * L
             n_wt = net_volume * STEEL_DENSITY_KG_MM3
@@ -513,6 +547,7 @@ async def async_analyze_single_drawing(file_bytes: bytes, filename: str) -> Dict
             "bends": uc["item"].get("number_of_bends_per_part", 0),
             "slots_count": uc["slots"],
             "is_tapered": uc["is_tapered"],
+            "position_z_mm": uc["item"].get("position_z_mm", 5.0),
             "net_weight_kg": calib_n_wt,
             "scrap_weight_kg": max(0.0, calib_g_wt - calib_n_wt),
             "gross_weight_kg": calib_g_wt,
@@ -572,12 +607,13 @@ async def serve_frontend_workspace():
             .visual-buttons-container { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 15px; }
             .btn-visual { flex: 1; min-width: 200px; display: none; text-align: center; padding: 14px; border-radius: 6px; font-size: 14px; font-weight: 700; color: white; border: none; cursor: pointer; text-decoration: none; }
             #btn-2d-trigger { background: #4A90E2; }
-            #btn-3d-trigger { background: #6f42c1; }
+            #btn-3d-handle-trigger { background: #6f42c1; }
+            #btn-3d-bracket-trigger { background: #563d7c; }
             .btn-dl-lnk { background: #218838 !important; }
             
             .visualizer-frame-dock { display: flex; flex-direction: column; gap: 20px; margin-top: 20px; }
             .visualizer-container { display: none; text-align: center; border: 1px solid #e0e0e0; padding: 15px; border-radius: 8px; background: #fafafa; }
-            .visualizer-container img { max-width: 100%; height: auto; border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+            .visualizer-container img { max-width: 100%; max-height: 75vh; width: auto; height: auto; border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); object-fit: contain; }
             
             .drawing-selector-bar { display: none; margin-top: 15px; gap: 8px; justify-content: center; flex-wrap: wrap; }
             .drawing-tab { padding: 8px 16px; background: #e2e8f0; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; color: #1B365D; font-size: 13px; }
@@ -587,7 +623,7 @@ async def serve_frontend_workspace():
     <body>
         <div class="workspace">
             <h1>Industrial Costing & Nesting Yield Matrix</h1>
-            <p class="info">Advanced Verification Workspace & Simulation Engine (Multi-Drawing Aggregation Enabled)</p>
+            <p class="info">Advanced Verification Workspace & Simulation Engine (Dual-Angle 3D Digital Twins)</p>
             
             <div class="drop-zone" id="drop-box">
                 <p>Click or Drag Blueprints and Batch Zips Here</p>
@@ -602,12 +638,12 @@ async def serve_frontend_workspace():
             <div class="visual-buttons-container">
                 <button class="btn-visual" id="btn-2d-trigger">View Aggregated 2D Layout Map</button>
                 <a class="btn-visual btn-dl-lnk" id="lnk-2d-download" download="aggregated_2d_nesting_layout.png" href="#">Download 2D Image PNG</a>
-                <button class="btn-visual" id="btn-3d-trigger">View Individual 3D CAD Models</button>
-                <a class="btn-visual btn-dl-lnk" id="lnk-3d-download" download="individual_3d_model.png" href="#">Download Current 3D PNG</a>
+                <button class="btn-visual" id="btn-3d-handle-trigger">3D View: Handle & Screw Bosses Focus</button>
+                <button class="btn-visual" id="btn-3d-bracket-trigger">3D View: Base Bracket & Mount Focus</button>
             </div>
 
             <div class="drawing-selector-bar" id="drawing-selector-bar">
-                <span style="font-weight:600; align-self:center; font-size:13px; color:#4a5568;">Select Drawing for 3D View:</span>
+                <span style="font-weight:600; align-self:center; font-size:13px; color:#4a5568;">Select Drawing Target:</span>
             </div>
             
             <div class="visualizer-frame-dock">
@@ -650,9 +686,9 @@ async def serve_frontend_workspace():
             const successBanner = document.getElementById('success-banner');
             const downloadTrigger = document.getElementById('download-trigger');
             const btn2DTrigger = document.getElementById('btn-2d-trigger');
-            const btn3DTrigger = document.getElementById('btn-3d-trigger');
+            const btn3DHandleTrigger = document.getElementById('btn-3d-handle-trigger');
+            const btn3DBracketTrigger = document.getElementById('btn-3d-bracket-trigger');
             const lnk2DDownload = document.getElementById('lnk-2d-download');
-            const lnk3DDownload = document.getElementById('lnk-3d-download');
             const frame2D = document.getElementById('visualizer-frame-2d');
             const frame3D = document.getElementById('visualizer-frame-3d');
             const img2DDisplay = document.getElementById('2d-image-display');
@@ -664,6 +700,7 @@ async def serve_frontend_workspace():
             let activeSessionId = "";
             let processedDrawingIds = [];
             let currentSelectedDrawingId = "";
+            let currentAngleMode = "handle";
 
             dropBox.addEventListener('click', () => filePicker.click());
             filePicker.addEventListener('change', (e) => storeFiles(e.target.files));
@@ -719,7 +756,8 @@ async def serve_frontend_workspace():
                         downloadTrigger.style.display = 'block';
                         
                         btn2DTrigger.style.display = 'block';
-                        btn3DTrigger.style.display = 'block';
+                        btn3DHandleTrigger.style.display = 'block';
+                        btn3DBracketTrigger.style.display = 'block';
                         
                         lnk2DDownload.href = '/generate-premium-2d-visual/' + activeSessionId;
                         lnk2DDownload.style.display = 'block';
@@ -730,12 +768,12 @@ async def serve_frontend_workspace():
             });
 
             function buildDrawingTabs() {
-                drawingSelectorBar.innerHTML = '<span style="font-weight:600; align-self:center; font-size:13px; color:#4a5568;">Select Drawing for 3D View:</span>';
+                drawingSelectorBar.innerHTML = '<span style="font-weight:600; align-self:center; font-size:13px; color:#4a5568;">Select Drawing Target:</span>';
                 processedDrawingIds.forEach((drgId, idx) => {
                     const tabBtn = document.createElement('button');
                     tabBtn.className = 'drawing-tab' + (idx === 0 ? ' active' : '');
                     tabBtn.innerText = drgId;
-                    tabBtn.onclick = () => selectDrawingFor3D(drgId, tabBtn);
+                    tabBtn.onclick = () => selectDrawingTarget(drgId, tabBtn);
                     drawingSelectorBar.appendChild(tabBtn);
                 });
                 if(processedDrawingIds.length > 0) {
@@ -743,14 +781,18 @@ async def serve_frontend_workspace():
                 }
             }
 
-            function selectDrawingFor3D(drgId, btnElement) {
+            function selectDrawingTarget(drgId, btnElement) {
                 currentSelectedDrawingId = drgId;
                 document.querySelectorAll('.drawing-tab').forEach(b => b.classList.remove('active'));
                 btnElement.classList.add('active');
-                
-                header3DTitle.innerText = "3D CAD Model: " + drgId;
-                img3DDisplay.src = '/generate-premium-3d-visual/' + activeSessionId + '?drawing_id=' + encodeURIComponent(drgId) + '&t=' + new Date().getTime();
-                lnk3DDownload.href = '/generate-premium-3d-visual/' + activeSessionId + '?drawing_id=' + encodeURIComponent(drgId);
+                refresh3DView();
+            }
+
+            function refresh3DView() {
+                if(currentSelectedDrawingId) {
+                    header3DTitle.innerText = "3D CAD Model (" + (currentAngleMode === 'handle' ? 'Handle & Screw Bosses Focus' : 'Base Bracket & Mount Focus') + "): " + currentSelectedDrawingId;
+                    img3DDisplay.src = '/generate-premium-3d-visual/' + activeSessionId + '?drawing_id=' + encodeURIComponent(currentSelectedDrawingId) + '&angle=' + currentAngleMode + '&t=' + new Date().getTime();
+                }
             }
 
             btn2DTrigger.addEventListener('click', () => {
@@ -758,16 +800,17 @@ async def serve_frontend_workspace():
                 frame2D.style.display = 'block';
             });
 
-            btn3DTrigger.addEventListener('click', () => {
+            btn3DHandleTrigger.addEventListener('click', () => {
+                currentAngleMode = 'handle';
                 drawingSelectorBar.style.display = 'flex';
-                if(currentSelectedDrawingId) {
-                    header3DTitle.innerText = "3D CAD Model: " + currentSelectedDrawingId;
-                    img3DDisplay.src = '/generate-premium-3d-visual/' + activeSessionId + '?drawing_id=' + encodeURIComponent(currentSelectedDrawingId) + '&t=' + new Date().getTime();
-                    lnk3DDownload.href = '/generate-premium-3d-visual/' + activeSessionId + '?drawing_id=' + encodeURIComponent(currentSelectedDrawingId);
-                } else {
-                    img3DDisplay.src = '/generate-premium-3d-visual/' + activeSessionId + '?t=' + new Date().getTime();
-                    lnk3DDownload.href = '/generate-premium-3d-visual/' + activeSessionId;
-                }
+                refresh3DView();
+                frame3D.style.display = 'block';
+            });
+
+            btn3DBracketTrigger.addEventListener('click', () => {
+                currentAngleMode = 'bracket';
+                drawingSelectorBar.style.display = 'flex';
+                refresh3DView();
                 frame3D.style.display = 'block';
             });
         </script>
@@ -845,7 +888,6 @@ async def stream_live_calculations(session_id: str):
         try:
             wb = openpyxl.Workbook()
             
-            # SHEET 3: PARAMETRIC RATES
             ws3 = wb.active
             ws3.title = "Material & Process Rates"
             ws3.views.sheetView[0].showGridLines = True
@@ -901,7 +943,6 @@ async def stream_live_calculations(session_id: str):
                 ws3.cell(row=r_idx, column=2).font = font_body; ws3.cell(row=r_idx, column=2).border = thin_border; ws3.cell(row=r_idx, column=2).alignment = right_align
                 ws3.cell(row=r_idx, column=2).number_format = '#,##0.00'
 
-            # SHEET 1: PROJECT HEADLINE REPORT
             ws1 = wb.create_sheet(title="Project Executive Summary", index=0)
             ws1.views.sheetView[0].showGridLines = True
             ws1.append(["Master Component Reference", "Target Mass Blueprint (kg)", "Calibrated Net Mass (kg)", "Calibrated Scrap Mass (kg)", "Calibrated Gross Mass (kg)", "Total Operations Cost (Laser Layout)", "Total Operations Cost (Turret Punch Matrix)", "Child Sub-Assembly Maps"])
@@ -909,7 +950,6 @@ async def stream_live_calculations(session_id: str):
                 cell.fill = navy_fill; cell.font = font_header; cell.alignment = center_align; cell.border = thin_border
             ws1.row_dimensions[1].height = 28
 
-            # SHEET 2: ALL COMPONENT LEDGER
             ws2 = wb.create_sheet(title="All Components Ledger", index=1)
             ws2.views.sheetView[0].showGridLines = True
             ws2.append(["Parent Sheet Link", "Part No", "Classification Profile", "Quantity Run", "Length (mm)", "Width (mm)", "Thickness (mm)", "Net Mass (kg)", "Scrap Mass (kg)", "Gross Mass (kg)", "Laser Trace Path (mm)", "Laser Weld Path (mm)", "Bending Stroke Sets", "Bending Cost (INR)", "Surface Coating Cost (INR)", "Laser Routing Cost (INR)", "Punch Tooling Cost (INR)", "Advanced Manufacturing Process Guidance"])
@@ -947,6 +987,8 @@ async def stream_live_calculations(session_id: str):
                         rate = TAPERED_GUSSET_RATE
                     elif c_type == "screwing_piece":
                         rate = SCREWING_PIECE_RATE
+                    elif c_type == "handle":
+                        rate = SHEET_RATE
                     elif c_type in ["sheet", "chair angle", "chair_angle"]:
                         rate = SHEET_RATE
                     else:
@@ -1066,7 +1108,6 @@ async def stream_live_calculations(session_id: str):
                 cell.font = font_total; cell.fill = gold_fill; cell.border = double_border
                 if c >= 8: cell.alignment = right_align
 
-            # SHEET 4: ADVANCED NESTING & PRODUCTION OPTIMIZATION STRATEGY
             ws4 = wb.create_sheet(title="Nesting Optimization Strategy", index=3)
             ws4.views.sheetView[0].showGridLines = True
             
@@ -1204,7 +1245,7 @@ async def generate_premium_2d_visual(session_id: str):
     return Response(content=img_stream.getvalue(), media_type="image/png")
 
 @app.get("/generate-premium-3d-visual/{session_id}")
-async def generate_premium_3d_visual(session_id: str, drawing_id: str = None):
+async def generate_premium_3d_visual(session_id: str, drawing_id: str = None, angle: str = "handle"):
     if session_id not in session_cache or not session_cache[session_id]["compiled_results"]:
         raise HTTPException(status_code=404, detail="No active parametric spatial metadata discovered.")
 
@@ -1220,7 +1261,7 @@ async def generate_premium_3d_visual(session_id: str, drawing_id: str = None):
     if not target_components and compiled_results:
         target_components = compiled_results[0].get("components", [])
 
-    img_stream = generate_cad_3d_assembly_model(target_components)
+    img_stream = generate_cad_3d_assembly_model(target_components, drawing_id=drawing_id or "", angle_mode=angle)
     return Response(content=img_stream.getvalue(), media_type="image/png")
 
 @app.get("/download-compiled-report/{session_id}")
