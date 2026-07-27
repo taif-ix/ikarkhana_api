@@ -91,7 +91,7 @@ def premium_generate_process_sequence_advisory(comp_type: str, slots: int, bends
     return "ROUTING: [1] Standard raw bundle stock saw feed -> [2] Edge clean cycle -> [3] Quality check queue."
 
 # =====================================================================
-# 3. MODULAR 2D & DUAL-ANGLE 3D CAD GENERATION FUNCTIONS
+# 3. MODULAR 2D & TRUE ISOMETRIC 3D CAD GENERATION FUNCTIONS
 # =====================================================================
 def generate_cad_2d_flat_layout(all_aggregated_components: List[Dict[str, Any]]) -> io.BytesIO:
     fig = Figure(figsize=(12, 11))
@@ -221,7 +221,7 @@ def determine_side_by_length(drawing_components: List[Dict[str, Any]]) -> str:
     else:
         return "right"
 
-def generate_cad_3d_assembly_model(drawing_components: List[Dict[str, Any]], drawing_id: str = "", angle_mode: str = "handle") -> io.BytesIO:
+def generate_cad_3d_assembly_model(drawing_components: List[Dict[str, Any]], drawing_id: str = "") -> io.BytesIO:
     plotter = pv.Plotter(off_screen=True, window_size=[1200, 1600])
     plotter.set_background("#EAECEE") 
 
@@ -230,10 +230,23 @@ def generate_cad_3d_assembly_model(drawing_components: List[Dict[str, Any]], dra
     if is_column:
         col_width = 45.0  # Square tube 45x45 mm profile width
         tube_length = 2581.0  
-        base_arm_length = 420.0 
-        chair_angle_height = 305.0
         
-        # Handle exact parametric extraction from drawing
+        # Dynamic extraction of horizontal outreach from current drawing components
+        base_arm_length = 437.0  
+        for c in drawing_components:
+            desc = str(c.get("description", "")).upper()
+            c_type = str(c.get("component_type", "")).upper()
+            if "CHAIR" in desc or "GUSSET" in c_type or "ANGLE" in desc:
+                w_val = float(c.get("length_mm", 0.0)) or float(c.get("width_mm", 0.0))
+                if 50.0 < w_val < 1500.0:
+                    base_arm_length = w_val
+                    break
+        
+        # Exact vertical dimensions from blueprint image_3b045b.png
+        base_z_start = 131.0       # Exact gap from bottom base plate to starting point of chair angle
+        chair_angle_top_z = 305.0  # Exact total height from bottom plate to top of chair angle
+        bracket_height = chair_angle_top_z - base_z_start  # 174.0 mm vertical span
+        
         handle_len = 200.0
         handle_width = 70.0
         handle_thick = 2.0
@@ -263,15 +276,6 @@ def generate_cad_3d_assembly_model(drawing_components: List[Dict[str, Any]], dra
                 if t_val > 0.0:
                     handle_thick = t_val
 
-            if "CHAIR" in desc or "GUSSET" in c_type or "ANGLE" in desc:
-                w_val = float(c.get("width_mm", 0.0)) or float(c.get("length_mm", 0.0))
-                if w_val > 50.0:
-                    base_arm_length = w_val
-                
-                h_val = float(c.get("length_mm", 0.0))
-                if h_val > 50.0 and h_val < 1000.0:
-                    chair_angle_height = h_val
-
             if "-LH" in p_num or "-LH" in desc or "CHAIR ANGLE-LH" in desc:
                 has_lh = True
                 explicit_tag_found = True
@@ -288,14 +292,14 @@ def generate_cad_3d_assembly_model(drawing_components: List[Dict[str, Any]], dra
                 has_lh = False
                 has_rh = True
 
-        satin_steel = dict(pbr=True, metallic=0.50, roughness=0.42, color="#D8E2EC", smooth_shading=True)
+        satin_steel = dict(pbr=True, metallic=0.50, roughness=0.42, color="#D8E2EC", smooth_shading=False)
         hardware_steel = dict(pbr=True, metallic=0.85, roughness=0.20, color="#2C3E50", smooth_shading=True)
 
         # 1. Base Mounting Plate
         base_plate = pv.Box(bounds=(-55.0, 55.0, -75.0, 75.0, 0.0, 5.0))
         plotter.add_mesh(base_plate, **satin_steel)
 
-        # 2. Main Square Tube (Non-round, exact 45x45mm square profile)
+        # 2. Main Square Tube (Strictly sharp-edged square profile)
         column = pv.Box(bounds=(-col_width/2, col_width/2, -col_width/2, col_width/2, 5.0, 5.0 + tube_length))
         plotter.add_mesh(column, **satin_steel)
 
@@ -303,11 +307,9 @@ def generate_cad_3d_assembly_model(drawing_components: List[Dict[str, Any]], dra
         top_plate = pv.Box(bounds=(-62.5, 62.5, -62.5, 62.5, 5.0 + tube_length, 5.0 + tube_length + 5.0))
         plotter.add_mesh(top_plate, **satin_steel)
 
-        # 4. Base Chair Angles (Strictly fixed at bottom base plate Z = 5.0mm with exact height)
-        base_arm_h_base = chair_angle_height  
+        # 4. Chair Angles (Mounted with exact dynamically extracted outreach length and vertical datums)
         base_arm_h_tip = 45.0
         base_arm_w = 45.0
-        base_z_start = 5.0  
 
         active_directions = []
         if has_rh: active_directions.append(1)   
@@ -319,9 +321,9 @@ def generate_cad_3d_assembly_model(drawing_components: List[Dict[str, Any]], dra
             
             pts = np.array([
                 [inner_x, 0, base_z_start],
-                [outer_x, 0, base_z_start + base_arm_h_base - base_arm_h_tip],
-                [outer_x, 0, base_z_start + base_arm_h_base],
-                [inner_x, 0, base_z_start + base_arm_h_base]
+                [outer_x, 0, base_z_start + bracket_height - base_arm_h_tip],
+                [outer_x, 0, base_z_start + bracket_height],
+                [inner_x, 0, base_z_start + bracket_height]
             ])
 
             profile_face = pv.PolyData(pts, np.array([4, 0, 1, 2, 3]))
@@ -331,7 +333,7 @@ def generate_cad_3d_assembly_model(drawing_components: List[Dict[str, Any]], dra
 
             for frac in [0.35, 0.75]:
                 hx = inner_x + (base_arm_length * frac * x_dir)
-                hole = pv.Cylinder(center=(hx, 0, base_z_start + base_arm_h_base + 0.5), direction=(0,0,1), radius=4.5, height=2.0, resolution=20)
+                hole = pv.Cylinder(center=(hx, 0, base_z_start + bracket_height + 0.5), direction=(0,0,1), radius=4.5, height=2.0, resolution=20)
                 plotter.add_mesh(hole, color="#1A1A1A", smooth_shading=True)
 
         # 5. Visible Protruding Screwing Pieces / Hardware (Item 6)
@@ -342,23 +344,19 @@ def generate_cad_3d_assembly_model(drawing_components: List[Dict[str, Any]], dra
             bolt_head = pv.Cylinder(center=(0.0, -col_width/2 - 8.0, z), direction=(0, 1, 0), radius=5.5, height=4.0, resolution=20)
             plotter.add_mesh(bolt_head, **hardware_steel)
 
-        # 6. Exact Flat Strap / Rectangular Loop Handle Extracted from Drawing
+        # 6. Industrial C-Shaped Handle Welded to Side Face
         handle_z_center = tube_length * 0.65 
-        side_multiplier = 1.0 if has_rh and not has_lh else -1.0
-        
-        # Build precise flat strip rectangular loop handle components based on extracted dimensions
-        h_bar_thickness = handle_thick  # e.g., 2mm
-        h_bar_depth = 12.0             # Width of the flat strap bar cross-section
-        
-        leg1 = pv.Box(bounds=(-h_bar_depth/2, h_bar_depth/2, (col_width/2 + handle_width - h_bar_thickness)*side_multiplier, (col_width/2 + handle_width)*side_multiplier, handle_z_center - handle_len/2, handle_z_center + handle_len/2))
-        leg2 = pv.Box(bounds=(-h_bar_depth/2, h_bar_depth/2, (col_width/2)*side_multiplier, (col_width/2 + h_bar_thickness)*side_multiplier, handle_z_center - handle_len/2, handle_z_center + handle_len/2))
-        top_bar = pv.Box(bounds=(-h_bar_depth/2, h_bar_depth/2, (col_width/2)*side_multiplier, (col_width/2 + handle_width)*side_multiplier, handle_z_center + handle_len/2 - h_bar_thickness, handle_z_center + handle_len/2))
-        bot_bar = pv.Box(bounds=(-h_bar_depth/2, h_bar_depth/2, (col_width/2)*side_multiplier, (col_width/2 + handle_width)*side_multiplier, handle_z_center - handle_len/2, handle_z_center - handle_len/2 + h_bar_thickness))
-        
-        plotter.add_mesh(leg1, color="#2C3E50", pbr=True, metallic=0.7, roughness=0.4)
-        plotter.add_mesh(leg2, color="#2C3E50", pbr=True, metallic=0.7, roughness=0.4)
-        plotter.add_mesh(top_bar, color="#2C3E50", pbr=True, metallic=0.7, roughness=0.4)
-        plotter.add_mesh(bot_bar, color="#2C3E50", pbr=True, metallic=0.7, roughness=0.4)
+        side_mult = 1.0 if has_rh and not has_lh else -1.0
+        h_outreach = 60.0
+        h_dia = 12.0
+
+        standoff_bot = pv.Cylinder(center=(0.0, (-col_width/2 - h_outreach/2) * side_mult, handle_z_center - handle_len/2), direction=(0, side_mult, 0), radius=h_dia/2, height=h_outreach, resolution=20)
+        standoff_top = pv.Cylinder(center=(0.0, (-col_width/2 - h_outreach/2) * side_mult, handle_z_center + handle_len/2), direction=(0, side_mult, 0), radius=h_dia/2, height=h_outreach, resolution=20)
+        grip_bar = pv.Cylinder(center=(0.0, (-col_width/2 - h_outreach) * side_mult, handle_z_center), direction=(0, 0, 1), radius=h_dia/2, height=handle_len, resolution=20)
+
+        plotter.add_mesh(standoff_bot, color="#2C3E50", pbr=True, metallic=0.7, roughness=0.4)
+        plotter.add_mesh(standoff_top, color="#2C3E50", pbr=True, metallic=0.7, roughness=0.4)
+        plotter.add_mesh(grip_bar, color="#2C3E50", pbr=True, metallic=0.7, roughness=0.4)
 
     else:
         tray_length = 600.0
@@ -384,17 +382,10 @@ def generate_cad_3d_assembly_model(drawing_components: List[Dict[str, Any]], dra
     plotter.add_light(pv.Light(position=(-3000, 3000, 2000), focal_point=(0, 0, 1300), intensity=0.8, color='#FFFFFF'))
     plotter.add_light(pv.Light(position=(0, 4000, 2000), focal_point=(0, 0, 1300), intensity=0.6, color='#FFFFFF'))
     
-    # Balanced zoom levels to fit the full assembly perfectly in the frame
     plotter.camera_position = 'iso'
     plotter.reset_camera()
-    if angle_mode == "bracket":
-        plotter.camera.azimuth = 135
-        plotter.camera.elevation = 15
-        plotter.camera.zoom(1.15)  # Balanced framing for bracket view
-    else:
-        plotter.camera.azimuth = 30
-        plotter.camera.elevation = 20
-        plotter.camera.zoom(1.10)  # Balanced framing for handle view
+    plotter.isometric_view()
+    plotter.camera.zoom(1.12)
 
     img_array = plotter.screenshot(return_img=True)
     plotter.close()
@@ -607,8 +598,7 @@ async def serve_frontend_workspace():
             .visual-buttons-container { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 15px; }
             .btn-visual { flex: 1; min-width: 200px; display: none; text-align: center; padding: 14px; border-radius: 6px; font-size: 14px; font-weight: 700; color: white; border: none; cursor: pointer; text-decoration: none; }
             #btn-2d-trigger { background: #4A90E2; }
-            #btn-3d-handle-trigger { background: #6f42c1; }
-            #btn-3d-bracket-trigger { background: #563d7c; }
+            #btn-3d-trigger { background: #6f42c1; }
             .btn-dl-lnk { background: #218838 !important; }
             
             .visualizer-frame-dock { display: flex; flex-direction: column; gap: 20px; margin-top: 20px; }
@@ -623,7 +613,7 @@ async def serve_frontend_workspace():
     <body>
         <div class="workspace">
             <h1>Industrial Costing & Nesting Yield Matrix</h1>
-            <p class="info">Advanced Verification Workspace & Simulation Engine (Dual-Angle 3D Digital Twins)</p>
+            <p class="info">Advanced Verification Workspace & Simulation Engine (True Engineering Isometric View)</p>
             
             <div class="drop-zone" id="drop-box">
                 <p>Click or Drag Blueprints and Batch Zips Here</p>
@@ -638,8 +628,8 @@ async def serve_frontend_workspace():
             <div class="visual-buttons-container">
                 <button class="btn-visual" id="btn-2d-trigger">View Aggregated 2D Layout Map</button>
                 <a class="btn-visual btn-dl-lnk" id="lnk-2d-download" download="aggregated_2d_nesting_layout.png" href="#">Download 2D Image PNG</a>
-                <button class="btn-visual" id="btn-3d-handle-trigger">3D View: Handle & Screw Bosses Focus</button>
-                <button class="btn-visual" id="btn-3d-bracket-trigger">3D View: Base Bracket & Mount Focus</button>
+                <button class="btn-visual" id="btn-3d-trigger">View 3D CAD Isometric Digital Twin</button>
+                <a class="btn-visual btn-dl-lnk" id="lnk-3d-download" download="isometric_3d_model.png" href="#">Download 3D Isometric PNG</a>
             </div>
 
             <div class="drawing-selector-bar" id="drawing-selector-bar">
@@ -652,7 +642,7 @@ async def serve_frontend_workspace():
                     <img id="2d-image-display" src="" alt="2D Layout View">
                 </div>
                 <div class="visualizer-container" id="visualizer-frame-3d">
-                    <h3 style="color:#6f42c1; margin-bottom:10px; font-size:14px;" id="3d-header-title">Individual 3D Shaded Metallic CAD Digital Twin</h3>
+                    <h3 style="color:#6f42c1; margin-bottom:10px; font-size:14px;" id="3d-header-title">True Engineering Isometric 3D CAD Digital Twin</h3>
                     <img id="3d-image-display" src="" alt="3D Model View">
                 </div>
             </div>
@@ -686,9 +676,9 @@ async def serve_frontend_workspace():
             const successBanner = document.getElementById('success-banner');
             const downloadTrigger = document.getElementById('download-trigger');
             const btn2DTrigger = document.getElementById('btn-2d-trigger');
-            const btn3DHandleTrigger = document.getElementById('btn-3d-handle-trigger');
-            const btn3DBracketTrigger = document.getElementById('btn-3d-bracket-trigger');
+            const btn3DTrigger = document.getElementById('btn-3d-trigger');
             const lnk2DDownload = document.getElementById('lnk-2d-download');
+            const lnk3DDownload = document.getElementById('lnk-3d-download');
             const frame2D = document.getElementById('visualizer-frame-2d');
             const frame3D = document.getElementById('visualizer-frame-3d');
             const img2DDisplay = document.getElementById('2d-image-display');
@@ -700,7 +690,6 @@ async def serve_frontend_workspace():
             let activeSessionId = "";
             let processedDrawingIds = [];
             let currentSelectedDrawingId = "";
-            let currentAngleMode = "handle";
 
             dropBox.addEventListener('click', () => filePicker.click());
             filePicker.addEventListener('change', (e) => storeFiles(e.target.files));
@@ -756,8 +745,7 @@ async def serve_frontend_workspace():
                         downloadTrigger.style.display = 'block';
                         
                         btn2DTrigger.style.display = 'block';
-                        btn3DHandleTrigger.style.display = 'block';
-                        btn3DBracketTrigger.style.display = 'block';
+                        btn3DTrigger.style.display = 'block';
                         
                         lnk2DDownload.href = '/generate-premium-2d-visual/' + activeSessionId;
                         lnk2DDownload.style.display = 'block';
@@ -790,8 +778,9 @@ async def serve_frontend_workspace():
 
             function refresh3DView() {
                 if(currentSelectedDrawingId) {
-                    header3DTitle.innerText = "3D CAD Model (" + (currentAngleMode === 'handle' ? 'Handle & Screw Bosses Focus' : 'Base Bracket & Mount Focus') + "): " + currentSelectedDrawingId;
-                    img3DDisplay.src = '/generate-premium-3d-visual/' + activeSessionId + '?drawing_id=' + encodeURIComponent(currentSelectedDrawingId) + '&angle=' + currentAngleMode + '&t=' + new Date().getTime();
+                    header3DTitle.innerText = "True Engineering Isometric 3D CAD: " + currentSelectedDrawingId;
+                    img3DDisplay.src = '/generate-premium-3d-visual/' + activeSessionId + '?drawing_id=' + encodeURIComponent(currentSelectedDrawingId) + '&t=' + new Date().getTime();
+                    lnk3DDownload.href = '/generate-premium-3d-visual/' + activeSessionId + '?drawing_id=' + encodeURIComponent(currentSelectedDrawingId);
                 }
             }
 
@@ -800,15 +789,7 @@ async def serve_frontend_workspace():
                 frame2D.style.display = 'block';
             });
 
-            btn3DHandleTrigger.addEventListener('click', () => {
-                currentAngleMode = 'handle';
-                drawingSelectorBar.style.display = 'flex';
-                refresh3DView();
-                frame3D.style.display = 'block';
-            });
-
-            btn3DBracketTrigger.addEventListener('click', () => {
-                currentAngleMode = 'bracket';
+            btn3DTrigger.addEventListener('click', () => {
                 drawingSelectorBar.style.display = 'flex';
                 refresh3DView();
                 frame3D.style.display = 'block';
@@ -1245,7 +1226,7 @@ async def generate_premium_2d_visual(session_id: str):
     return Response(content=img_stream.getvalue(), media_type="image/png")
 
 @app.get("/generate-premium-3d-visual/{session_id}")
-async def generate_premium_3d_visual(session_id: str, drawing_id: str = None, angle: str = "handle"):
+async def generate_premium_3d_visual(session_id: str, drawing_id: str = None):
     if session_id not in session_cache or not session_cache[session_id]["compiled_results"]:
         raise HTTPException(status_code=404, detail="No active parametric spatial metadata discovered.")
 
@@ -1261,7 +1242,7 @@ async def generate_premium_3d_visual(session_id: str, drawing_id: str = None, an
     if not target_components and compiled_results:
         target_components = compiled_results[0].get("components", [])
 
-    img_stream = generate_cad_3d_assembly_model(target_components, drawing_id=drawing_id or "", angle_mode=angle)
+    img_stream = generate_cad_3d_assembly_model(target_components, drawing_id=drawing_id or "")
     return Response(content=img_stream.getvalue(), media_type="image/png")
 
 @app.get("/download-compiled-report/{session_id}")
