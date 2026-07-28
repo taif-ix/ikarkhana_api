@@ -9,11 +9,11 @@ jobs:
   deploy:
     uses: taif-ix/ikarkhana_api/.github/workflows/reusable-cloudrun.yml@main
     with:
-      service_name: my-api-poc
-      project_id: my-gcp-project
+      service_name: ikarkhana-test
+      project_id: gen-lang-client-0148520460
       region: us-central1
-      repository: docker-images
-      image_name: my-api
+      repository: ikarkhana-test
+      image_name: ikarkhana-test
       dockerfile: ./Dockerfile
 
     secrets:
