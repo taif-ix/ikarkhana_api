@@ -1,0 +1,29 @@
+name: Trigger DEV Deployment
+
+
+on:
+  push:
+    branches:
+      - poc
+  workflow_dispatch:
+
+
+
+permissions:
+  id-token: write
+  contents: read  
+
+
+
+jobs:
+  deploy:
+    uses: taif-ix/ikarkhana_api/.github/workflows/reusable-cloudrun.yml@main
+    with:
+      target_branch: poc
+      # image_tag: ${{ github.sha }}
+      head_sha: ${{ github.sha }}
+    secrets:
+      # Pass the secrets expected by reusable-cloudrun.yml
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
