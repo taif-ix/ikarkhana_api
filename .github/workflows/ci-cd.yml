@@ -1,0 +1,21 @@
+name: Deploy POC
+
+on:
+  push:
+    branches:
+      - poc
+
+jobs:
+  deploy:
+    uses: taif-ix/ikarkhana_api/.github/workflows/reusable-cloudrun.yml@main
+    with:
+      service_name: ikarkhana-test
+      project_id: gen-lang-client-0148520460
+      region: us-central1
+      repository: ikarkhana-test
+      image_name: ikarkhana-test
+      dockerfile: ./Dockerfile
+
+    secrets:
+      workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}

@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+pydantic
+google-genai
+google-cloud-aiplatform
+openpyxl
+pillow
+matplotlib
+python-dotenv
+pyvista
+vtk
+python-multipart
