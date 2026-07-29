@@ -5,9 +5,14 @@ on:
     branches:
       - poc
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   deploy:
     uses: indixpert-technologies/int-ikarkhana-ai-api/.github/workflows/reusable-cloudrun.yml@main
+
     with:
       service_name: ikarkhana-test
       project_id: gen-lang-client-0148520460
