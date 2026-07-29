@@ -1,9 +1,9 @@
-name: Deploy POC
+name: Deploy dev
 
 on:
   push:
     branches:
-      - poc
+      - dev
 
 jobs:
   deploy:
