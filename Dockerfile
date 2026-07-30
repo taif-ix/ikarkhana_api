@@ -25,4 +25,4 @@ RUN pip install --upgrade pip \
 # COPY ALL APPLICATION FILES (This brings in root main.py AND the app/ directory)
 COPY . .
 
-CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]
