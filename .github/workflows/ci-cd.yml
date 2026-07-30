@@ -16,8 +16,8 @@ jobs:
     with:
       service_name: ikarkhana-test
       project_id: gen-lang-client-0148520460
-      region: us-central1
-      repository: ikarkhana-test
+      region: asia-south1
+      repository: cloud-run-source-deploy
       image_name: ikarkhana-test
       dockerfile: ./Dockerfile
 
