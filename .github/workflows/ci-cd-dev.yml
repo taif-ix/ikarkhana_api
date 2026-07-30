@@ -19,6 +19,7 @@ jobs:
       repository: cloud-run-source-deploy
       image_name: ikarkhana-test
       dockerfile: ./Dockerfile
+      port: "8000"  
 
     secrets:
       workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
