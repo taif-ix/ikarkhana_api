@@ -1,9 +1,9 @@
-# Environment and secrets
+# Environment files
 .env
 .env.*
 !.env.example
 
-# Python
+# Python caches
 __pycache__/
 *.py[cod]
 *$py.class
@@ -19,27 +19,32 @@ venv/
 env/
 ENV/
 
-
-be.md
-
-# Logs and local runtime files
+# Logs and runtime output
 *.log
-uvicorn*.log
-uvicorn*.out.log
-uvicorn*.err.log
-
-# OS and editor files
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
+logs/
+*.tmp
+*.temp
 
 # Build artifacts
-build/
 dist/
+build/
 *.egg-info/
 
-# Frontend artifacts should live in taif-ix/ikarkhana_web
-frontend/
+# Local editor/system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
 
-
+# Generated reports and uploads
+*.xlsx
+*.xls
+*.png
+*.jpg
+*.jpeg
+*.tif
+*.tiff
+*.pdf
+uploads/
+outputs/
+reports/
