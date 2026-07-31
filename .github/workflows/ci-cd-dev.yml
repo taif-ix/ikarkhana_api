@@ -5,16 +5,21 @@ on:
     branches:
       - dev
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   deploy:
     uses: indixpert-technologies/int-ikarkhana-ai-api/.github/workflows/reusable-cloudrun.yml@main
     with:
-      service_name: ikarkhana-test
+      service_name: ikarkhana-ai-api-dev
       project_id: gen-lang-client-0148520460
-      region: us-central1
-      repository: ikarkhana-test
-      image_name: ikarkhana-test
+      region: asia-south1
+      repository: ikarkhana-ai-api
+      image_name: ikarkhana-ai-api-dev
       dockerfile: ./Dockerfile
+      port: "8080"  
 
     secrets:
       workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
