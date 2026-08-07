@@ -41,6 +41,22 @@ http://127.0.0.1:8010
 - `POST /extract-dimensions` multipart form with `diagram`
 - `POST /calculate-cost-breakdown` JSON endpoint that recalculates structured costing from extracted data
 
+### Backend extraction from Cloud Storage
+
+`POST /extractions/from-gcs` reads an uploaded drawing from Cloud Storage and returns
+the extracted BOM and costing data as JSON.
+
+```json
+{
+  "gcs_uri": "gs://ikarkhana-uploads/drawings/example.png"
+}
+```
+
+Supported formats are JPEG, PNG, PDF, and TIFF, with a maximum object size of 25 MB.
+The AI API runtime service account needs `roles/storage.objectViewer` on the upload
+bucket. Keep the AI Cloud Run service private and grant the calling backend runtime
+service account `roles/run.invoker` on it.
+
 ## Gemini API Extraction
 
 Dimension extraction uses Gemini API. This avoids Vertex AI setup for the POC, but you still need a valid Gemini API key and available quota.
