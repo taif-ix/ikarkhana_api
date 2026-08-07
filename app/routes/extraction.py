@@ -1,4 +1,3 @@
-import os
 import traceback
 import time
 import uuid
@@ -82,7 +81,6 @@ def _download_gcs_object(
 async def extract_drawing_from_gcs(
     payload: GCSExtractionRequest,
     request: Request,
-    debug_failure: bool = False,
 ):
     request_id = getattr(request.state, "request_id", uuid.uuid4().hex)
     trace_id = getattr(request.state, "trace_id", None)
@@ -111,15 +109,6 @@ async def extract_drawing_from_gcs(
     )
 
     try:
-        # Temporary dev-only switch for verifying structured Cloud Run failures.
-        if debug_failure:
-            if not os.getenv("K_SERVICE", "").endswith("-dev"):
-                raise HTTPException(status_code=404, detail="Not found.")
-
-            pipeline_stage = "debug_failure"
-            pipeline_step = "raise_test_exception"
-            raise RuntimeError("Intentional dev failure for Cloud Logging verification.")
-
         bucket_name, object_name, filename = _parse_gcs_uri(
             payload.gcs_uri,
         )
