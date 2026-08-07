@@ -7,6 +7,7 @@ from google import genai
 
 from app import state
 from app.routes.batch import router as batch_router
+from app.routes.extraction import router as extraction_router
 from app.routes.workspace import router as workspace_router
 
 
@@ -36,6 +37,7 @@ def create_app() -> FastAPI:
     # Build the FastAPI app and attach all route groups.
     api = FastAPI(title="Industrial Smart Stamping & Visual Costing Engine", lifespan=lifespan)
     api.include_router(workspace_router)
+    api.include_router(extraction_router)
     api.include_router(batch_router)
     return api
 

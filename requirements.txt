@@ -3,6 +3,7 @@ uvicorn
 pydantic
 google-genai
 google-cloud-aiplatform
+google-cloud-storage
 openpyxl
 pillow
 matplotlib
