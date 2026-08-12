@@ -1,29 +1,98 @@
-from typing import List, Optional
+from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, HttpUrl
 
 
-# AI extraction response schemas.
-# =====================================================================
 class ExtractedComponent(BaseModel):
     part_number: str
-    component_type: str = Field(description="Must be explicitly 'perforated_tray', 'tapered_gusset', 'tube', 'sheet', 'accessory', 'screwing_piece', or 'handle'")
-    description: Optional[str] = Field(default="", description="Exact text from BOM description column, e.g., 'CHAIR ANGLE-RH', 'HANDLE', or 'SCREWING PIECE Ø 20X45'")
+    component_type: str = Field(description="Component manufacturing classification")
+    description: Optional[str] = ""
+    material: str = Field(default="UNKNOWN", description="Material grade such as CRCA, MS, SS304, or aluminium")
     per_set_qty: int
-    part_length_mm: float = Field(description="Height, linear length, or vertical back height of the part")
-    part_width_mm: float = Field(description="Width, outer diameter, or minor dimension of the part")
-    thickness_mm: float = Field(description="Exact material thickness extracted from drawing callout (e.g., 2mm for handle)")
+    part_length_mm: float
+    part_width_mm: float
+    part_height_mm: float = Field(default=0.0, description="Overall part height when separately dimensioned")
+    thickness_mm: float
     number_of_bends_per_part: int
-    position_z_mm: float = Field(default=5.0, description="Exact vertical mounting distance or offset from the bottom base plate in mm as shown in drawing dimensions")
-    estimated_punched_slots_count: int = Field(default=0, description="Total count of punched slots/perforations visible on surface area")
-    is_tapered_profile: bool = Field(default=False, description="True if part features a non-rectangular trapezoidal or triangular cut path")
-    weld_seams_count: int = Field(default=0, description="Total number of structural weld locations required")
-    
+    position_z_mm: float = 5.0
+    estimated_punched_slots_count: int = 0
+    is_tapered_profile: bool = False
+    weld_seams_count: int = 0
+
 
 class ExtractedBOMAssembly(BaseModel):
-    current_drawing_id: str = Field(description="Primary drawing identifier extracted from title block.")
+    current_drawing_id: str
     components: List[ExtractedComponent]
     total_estimated_welding_length_mm: float
-    referenced_drawing_ids: List[str] = Field(default=[])
-    target_blueprint_weight_kg: Optional[float] = Field(default=None)
-    preferred_assembly_side: str = Field(default="left", description="Indicates preferred side orientation or mounting bias, e.g., 'left' or 'right' based on drawing notes.")
+    referenced_drawing_ids: List[str] = Field(default_factory=list)
+    target_blueprint_weight_kg: Optional[float] = None
+    preferred_assembly_side: str = "left"
+
+
+class DrawingExtractionRequest(BaseModel):
+    image_url: HttpUrl
+    filename: Optional[str] = None
+    job_id: Optional[str] = Field(default=None, max_length=128)
+
+
+class BatchFileRequest(BaseModel):
+    analysis_id: int
+    file_url: HttpUrl
+    filename: Optional[str] = None
+
+
+class BatchExtractionRequest(BaseModel):
+    job_id: str = Field(min_length=1, max_length=128)
+    callback_url: HttpUrl
+    files: List[BatchFileRequest] = Field(min_length=1, max_length=100)
+
+
+class BatchAcceptedResponse(BaseModel):
+    job_id: str
+    status: Literal["ACCEPTED"] = "ACCEPTED"
+    file_count: int
+
+
+class AnalysisSummary(BaseModel):
+    part_number: str
+    part_description: str
+    part_type: str
+    material: str
+    thickness: float
+    width: float
+    height: float
+    length: float
+    drawing_weight_kg: float
+    calculated_weight_kg: float
+    machine_time_seconds: int
+    sheet_usage_percent: float
+    material_cost: float
+    net_material_weight_kg: float
+    scrap_weight_kg: float
+    scrap_cost: float
+
+
+class BomItem(BaseModel):
+    item_name: str
+    item_class: str
+    quantity: float
+    unit: Literal["kg"] = "kg"
+    weight_kg: float
+    unit_cost: float
+    total_cost: float
+    is_scrap: bool = False
+
+
+class AnalysisCallbackResponse(BaseModel):
+    job_id: str
+    analysis_id: int
+    status: Literal["COMPLETED"] = "COMPLETED"
+    analysis: AnalysisSummary
+    bom: List[BomItem]
+
+
+class AnalysisFailureCallback(BaseModel):
+    job_id: str
+    analysis_id: int
+    status: Literal["FAILED"] = "FAILED"
+    error: str

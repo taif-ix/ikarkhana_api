@@ -33,6 +33,77 @@ http://127.0.0.1:8010
 
 ## API
 
+### Backend batch processing
+
+The main backend starts an asynchronous extraction job with:
+
+```http
+POST /process-drawing
+Content-Type: application/json
+X-API-Key: <AI_API_KEY>
+```
+
+```json
+{
+  "job_id": "JOB-20260811-001",
+  "callback_url": "https://api.ikarkhana.com/ai/callback",
+  "files": [
+    {
+      "analysis_id": 101,
+      "file_url": "https://storage.googleapis.com/bucket/drawing-001.png",
+      "filename": "drawing-001.png"
+    }
+  ]
+}
+```
+
+The AI API immediately responds with HTTP `202 Accepted`:
+
+```json
+{
+  "job_id": "JOB-20260811-001",
+  "status": "ACCEPTED",
+  "file_count": 1
+}
+```
+
+Each file is downloaded and processed independently. On completion, the AI API sends one `POST` to `callback_url` for each `analysis_id`:
+
+```json
+{
+  "job_id": "JOB-20260811-001",
+  "analysis_id": 101,
+  "status": "COMPLETED",
+  "analysis": {},
+  "bom": []
+}
+```
+
+If a file cannot be downloaded or extracted, its callback is:
+
+```json
+{
+  "job_id": "JOB-20260811-001",
+  "analysis_id": 101,
+  "status": "FAILED",
+  "error": "failure details"
+}
+```
+
+The backend must return a successful `2xx` response to callbacks. Failed callback delivery is retried three times by default. Configure integration behavior with:
+
+```text
+AI_API_KEY=<secret accepted from the backend>
+BACKEND_CALLBACK_API_KEY=<secret sent to the backend callback>
+AI_BATCH_CONCURRENCY=3
+CALLBACK_TIMEOUT_SECONDS=20
+CALLBACK_MAX_ATTEMPTS=3
+DEFAULT_MATERIAL_RATE_PER_KG=100
+SECONDS_PER_OPERATION=5
+```
+
+`file_url` must be a direct public or signed read URL, not the Cloud Console object page. URLs copied into JSON must be raw URLs; Markdown syntax such as `[url](url)` is invalid.
+
 - `GET /health`
 - `GET /` API metadata
 - `GET /gemini-config`
