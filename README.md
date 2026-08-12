@@ -38,7 +38,7 @@ http://127.0.0.1:8010
 The main backend starts an asynchronous extraction job with:
 
 ```http
-POST /process-drawings
+POST /process-drawing
 Content-Type: application/json
 X-API-Key: <AI_API_KEY>
 ```

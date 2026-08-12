@@ -1,12 +1,17 @@
-<<<<<<< HEAD
 import asyncio
 import os
+import time
+import traceback
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlparse
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, status
+from google.api_core.exceptions import GoogleAPIError, NotFound
+from google.cloud import storage
+from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from app.ai.extraction import async_analyze_single_drawing
 from app.ai.schemas import (
@@ -19,6 +24,7 @@ from app.ai.schemas import (
     BomItem,
     DrawingExtractionRequest,
 )
+from app.diagnostics import cloud_print
 
 
 router = APIRouter(tags=["drawing-extraction"])
@@ -172,8 +178,14 @@ async def _process_batch(request: BatchExtractionRequest) -> None:
     ))
 
 
-@router.post("/process-drawings", response_model=BatchAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
-async def process_drawings(request: BatchExtractionRequest, background_tasks: BackgroundTasks, x_api_key: str | None = Header(default=None)):
+@router.post("/process-drawing", response_model=BatchAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/process-drawings",
+    response_model=BatchAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    include_in_schema=False,
+)
+async def process_drawing(request: BatchExtractionRequest, background_tasks: BackgroundTasks, x_api_key: str | None = Header(default=None)):
     """Accept a backend job and callback once for every supplied analysis_id."""
     _authorize_backend(x_api_key)
     analysis_ids = [file.analysis_id for file in request.files]
@@ -191,24 +203,6 @@ async def extract_drawing(request: DrawingExtractionRequest, x_api_key: str | No
     filename = _resolve_filename(str(request.image_url), request.filename, content_type)
     drawing = await async_analyze_single_drawing(file_bytes, filename)
     return _to_callback(request.job_id or uuid.uuid4().hex, 0, drawing)
-=======
-import traceback
-import time
-import uuid
-from pathlib import PurePosixPath
-from urllib.parse import unquote, urlparse
-
-from fastapi import APIRouter, HTTPException, Request
-from google.api_core.exceptions import GoogleAPIError, NotFound
-from google.cloud import storage
-from pydantic import BaseModel, Field
-from starlette.concurrency import run_in_threadpool
-
-from app.ai.extraction import async_analyze_single_drawing
-from app.diagnostics import cloud_print
-
-
-router = APIRouter(prefix="/extractions", tags=["extractions"])
 
 ALLOWED_FILE_EXTENSIONS = {".jpeg", ".jpg", ".pdf", ".png", ".tif", ".tiff"}
 MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024
@@ -271,7 +265,7 @@ def _download_gcs_object(
         ) from exc
 
 
-@router.post("/from-gcs")
+@router.post("/extractions/from-gcs", tags=["extractions"])
 async def extract_drawing_from_gcs(
     payload: GCSExtractionRequest,
     request: Request,
@@ -393,4 +387,3 @@ async def extract_drawing_from_gcs(
             status_code=500,
             detail=f"Extraction failed. Reference: {request_id}",
         ) from exc
->>>>>>> 02d4e824a07698b02789b94c187f806cabe0962f

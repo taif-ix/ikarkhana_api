@@ -100,7 +100,6 @@ def create_app() -> FastAPI:
     api.include_router(workspace_router)
     api.include_router(extraction_router)
     api.include_router(batch_router)
-    api.include_router(extraction_router)
     return api
 
 
