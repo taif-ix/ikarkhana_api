@@ -133,7 +133,8 @@ async def _send_callback(callback_url: str, payload: dict) -> None:
     timeout = float(os.getenv("CALLBACK_TIMEOUT_SECONDS", "20"))
     attempts = int(os.getenv("CALLBACK_MAX_ATTEMPTS", "3"))
     headers = {"Content-Type": "application/json"}
-    if callback_key := os.getenv("BACKEND_CALLBACK_API_KEY"):
+    callback_key = os.getenv("BACKEND_CALLBACK_API_KEY") or os.getenv("AI_API_KEY")
+    if callback_key:
         headers["X-API-Key"] = callback_key
     last_error = None
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
