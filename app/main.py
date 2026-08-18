@@ -4,7 +4,7 @@ import traceback
 import uuid
 from contextlib import asynccontextmanager
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from google import genai
@@ -19,6 +19,11 @@ from app.routes.structured_costing import router as structured_costing_router
 
 
 load_dotenv()
+# Accept the PowerShell-style `$env:NAME="value"` entries used by the existing
+# local .env file, while keeping standard NAME=value files fully supported.
+for dotenv_name, dotenv_value in dotenv_values().items():
+    if dotenv_name.startswith("$env:") and dotenv_value is not None:
+        os.environ.setdefault(dotenv_name.removeprefix("$env:"), dotenv_value)
 
 
 @asynccontextmanager
@@ -27,17 +32,22 @@ async def lifespan(app: FastAPI):
     project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "ai-automobile-product-costing")
     location_id = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
     api_key = os.getenv("GEMINI_API_KEY")
+    provider = os.getenv("GEMINI_PROVIDER", "gemini_api" if api_key else "vertex_ai").lower()
 
-    print(f"[SYSTEM START]: Initializing Calibrated GenAI Engine Pipeline: {project_id}")
-    if api_key and api_key != "your-gemini-api-key":
+    print(f"[SYSTEM START]: Initializing Calibrated GenAI Engine Pipeline via {provider}")
+    if provider == "gemini_api":
+        if not api_key or api_key == "your-gemini-api-key":
+            raise RuntimeError("GEMINI_PROVIDER is gemini_api but GEMINI_API_KEY is not configured.")
         state.client = genai.Client(api_key=api_key)
-    else:
+    elif provider == "vertex_ai":
         state.client = genai.Client(
             vertexai=True,
             http_options={"api_version": "v1", "headers": {"x-goog-user-project": project_id}},
             project=project_id,
             location=location_id,
         )
+    else:
+        raise RuntimeError("GEMINI_PROVIDER must be either gemini_api or vertex_ai.")
     yield
     state.session_cache.clear()
     state.GLOBAL_BLUEPRINT_CACHE.clear()
