@@ -14,6 +14,7 @@ from app.routes.batch import router as batch_router
 from app.routes.extraction import router as extraction_router
 from app.routes.workspace import router as workspace_router
 from app.routes.uploads import router as uploads_router
+from app.routes.structured_costing import router as structured_costing_router
 
 
 load_dotenv()
@@ -102,6 +103,7 @@ def create_app() -> FastAPI:
     api.include_router(extraction_router)
     api.include_router(batch_router)
     api.include_router(uploads_router)
+    api.include_router(structured_costing_router)
     return api
 
 
