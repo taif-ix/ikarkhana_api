@@ -1,6 +1,6 @@
 from typing import Any
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from app.ai.extraction import async_analyze_single_drawing
 
@@ -186,7 +186,18 @@ async def extract_cost_breakdown(
     welding_labor_per_meter: float = Form(22), painting_rate_per_m2: float = Form(120),
     scrap_rate_per_kg: float = Form(28), tacking_fixed_setup_cost: float = Form(0),
 ) -> dict[str, Any]:
-    drawing = await async_analyze_single_drawing(await diagram.read(), diagram.filename or "uploaded-diagram.png")
+    content = await diagram.read()
+    if not content:
+        raise HTTPException(status_code=422, detail="The uploaded drawing is empty.")
+    try:
+        drawing = await async_analyze_single_drawing(content, diagram.filename or "uploaded-diagram.png")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Drawing extraction failed: {type(exc).__name__}: {exc}",
+        ) from exc
     extraction = _drawing_to_extraction(drawing)
     return _cost_breakdown(
         extraction, material_rate_per_kg=material_rate_per_kg,

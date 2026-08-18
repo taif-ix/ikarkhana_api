@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from google import genai
 
 from app import state
@@ -22,17 +23,21 @@ load_dotenv()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize the shared Vertex AI/Gemini client once at startup.
+    # Use Gemini API when a key is configured; otherwise use Vertex AI credentials.
     project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "ai-automobile-product-costing")
     location_id = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+    api_key = os.getenv("GEMINI_API_KEY")
 
     print(f"[SYSTEM START]: Initializing Calibrated GenAI Engine Pipeline: {project_id}")
-    state.client = genai.Client(
-        vertexai=True,
-        http_options={"api_version": "v1", "headers": {"x-goog-user-project": project_id}},
-        project=project_id,
-        location=location_id,
-    )
+    if api_key and api_key != "your-gemini-api-key":
+        state.client = genai.Client(api_key=api_key)
+    else:
+        state.client = genai.Client(
+            vertexai=True,
+            http_options={"api_version": "v1", "headers": {"x-goog-user-project": project_id}},
+            project=project_id,
+            location=location_id,
+        )
     yield
     state.session_cache.clear()
     state.GLOBAL_BLUEPRINT_CACHE.clear()
@@ -42,6 +47,17 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     # Build the FastAPI app and attach all route groups.
     api = FastAPI(title="Industrial Smart Stamping & Visual Costing Engine", lifespan=lifespan)
+
+    @api.exception_handler(Exception)
+    async def unhandled_exception_response(request: Request, exc: Exception):
+        request_id = getattr(request.state, "request_id", None)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": f"{type(exc).__name__}: {exc}",
+                "request_id": request_id,
+            },
+        )
 
     @api.middleware("http")
     async def print_request_details(request: Request, call_next):
