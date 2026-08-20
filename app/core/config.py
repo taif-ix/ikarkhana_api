@@ -23,6 +23,7 @@ SHEET_STOCK_LENGTH_MM = 2500.00
 SHEET_STOCK_WIDTH_MM = 1250.00
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ALLOWED_GEMINI_MODELS = {
+    "gemini-3.1-pro-preview",
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-3.5-flash",

@@ -278,7 +278,7 @@ def extract_dimensions_with_gemini(content: bytes, content_type: str | None) -> 
     api_key = os.getenv("GEMINI_API_KEY")
     project = os.getenv("GOOGLE_CLOUD_PROJECT")
     location = os.getenv("GOOGLE_CLOUD_LOCATION", "asia-south1")
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
+    model = os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
 
     if provider not in {"gemini_api", "vertex_ai"}:
         raise HTTPException(status_code=503, detail="GEMINI_PROVIDER must be gemini_api or vertex_ai.")
@@ -342,7 +342,7 @@ def _gemini_generate_json(
     api_key = os.getenv("GEMINI_API_KEY")
     project = os.getenv("GOOGLE_CLOUD_PROJECT")
     location = os.getenv("GOOGLE_CLOUD_LOCATION", "asia-south1")
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
+    model = os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
 
     if provider not in {"gemini_api", "vertex_ai"}:
         raise HTTPException(status_code=503, detail="GEMINI_PROVIDER must be gemini_api or vertex_ai.")

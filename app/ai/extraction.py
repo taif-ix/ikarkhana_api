@@ -38,7 +38,7 @@ async def async_analyze_single_drawing(file_bytes: bytes, filename: str) -> Dict
     prompt = DRAWING_EXTRACTION_PROMPT
 
     response = await state.client.aio.models.generate_content(
-        model=os.getenv("GEMINI_MODEL", "gemini-2.5-pro"),
+        model=os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview"),
         contents=[prompt, drawing_part],
         config=types.GenerateContentConfig(
             response_mime_type="application/json",

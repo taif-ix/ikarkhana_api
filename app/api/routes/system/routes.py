@@ -53,7 +53,7 @@ def gemini_config() -> GeminiConfig:
         project_configured=bool(project and project != "your-gcp-project-id"),
         project=project,
         location=os.getenv("GOOGLE_CLOUD_LOCATION", "asia-south1"),
-        model=os.getenv("GEMINI_MODEL", "gemini-2.5-pro"),
+        model=os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview"),
         google_genai_installed=package_installed("google.genai"),
         pillow_installed=package_installed("PIL"),
     )

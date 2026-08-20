@@ -10,6 +10,7 @@ from google import genai
 
 from app import state
 from app.api.routes import router as web_api_router
+from app.core.config import load_project_env
 from app.diagnostics import cloud_print
 from app.routes.batch import router as batch_router
 from app.routes.extraction import router as extraction_router
@@ -17,21 +18,31 @@ from app.routes.workspace import router as workspace_router
 
 
 load_dotenv()
+load_project_env()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize the shared Vertex AI/Gemini client once at startup.
+    # Use the configured Gemini provider for callback and web extraction routes.
     project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "ai-automobile-product-costing")
     location_id = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+    api_key = os.getenv("GEMINI_API_KEY")
+    provider = os.getenv("GEMINI_PROVIDER", "gemini_api" if api_key else "vertex_ai").lower()
 
-    print(f"[SYSTEM START]: Initializing Calibrated GenAI Engine Pipeline: {project_id}")
-    state.client = genai.Client(
-        vertexai=True,
-        http_options={"api_version": "v1", "headers": {"x-goog-user-project": project_id}},
-        project=project_id,
-        location=location_id,
-    )
+    print(f"[SYSTEM START]: Initializing Calibrated GenAI Engine Pipeline via {provider}")
+    if provider == "gemini_api":
+        if not api_key or api_key == "your-gemini-api-key":
+            raise RuntimeError("GEMINI_PROVIDER is gemini_api but GEMINI_API_KEY is not configured.")
+        state.client = genai.Client(api_key=api_key)
+    elif provider == "vertex_ai":
+        state.client = genai.Client(
+            vertexai=True,
+            http_options={"api_version": "v1", "headers": {"x-goog-user-project": project_id}},
+            project=project_id,
+            location=location_id,
+        )
+    else:
+        raise RuntimeError("GEMINI_PROVIDER must be either gemini_api or vertex_ai.")
     yield
     state.session_cache.clear()
     state.GLOBAL_BLUEPRINT_CACHE.clear()
