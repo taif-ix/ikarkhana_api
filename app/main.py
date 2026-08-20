@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 from google import genai
 
 from app import state
+from app.api.routes import router as web_api_router
 from app.diagnostics import cloud_print
 from app.routes.batch import router as batch_router
 from app.routes.extraction import router as extraction_router
@@ -100,6 +101,7 @@ def create_app() -> FastAPI:
     api.include_router(workspace_router)
     api.include_router(extraction_router)
     api.include_router(batch_router)
+    api.include_router(web_api_router)
     return api
 
 
