@@ -45,6 +45,6 @@ Thumbs.db
 *.tif
 *.tiff
 *.pdf
-uploads/
+/uploads/
 outputs/
 reports/
