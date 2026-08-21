@@ -209,7 +209,7 @@ def _weight_step_text(
     )
 
 
-def _stock_for_part(component_type: str, net_weight: float, length_mm: float, width_mm: float, thickness_mm: float, density: float, qty: int) -> tuple[float, float, str]:
+def _stock_for_part(component_type: str, net_weight: float, length_mm: float, width_mm: float, thickness_mm: float, density: float, qty: int) -> tuple[float, float, str, dict]:
     component = component_type.lower()
     if component in {"tube", "rod", "accessory"}:
         stock = rod_stock_summary(net_weight, length_mm, qty)
@@ -218,7 +218,7 @@ def _stock_for_part(component_type: str, net_weight: float, length_mm: float, wi
     parts_per_stock = max(int(stock["parts_per_stock"]), 1)
     gross_unit = float(stock["stock_weight_kg"]) / parts_per_stock
     scrap_unit = max(gross_unit - net_weight, 0)
-    return gross_unit, scrap_unit, str(stock["approach"])
+    return gross_unit, scrap_unit, str(stock["approach"]), stock
 
 
 def calculate_structured_cost_breakdown(
@@ -263,7 +263,7 @@ def calculate_structured_cost_breakdown(
         surface_area, net_weight = _part_area_and_weight(part.component_type, part.tube_type, length, width_or_dia, secondary_width, thickness, density)
         surface_formula, surface_values = _surface_area_step_text(part.component_type, part.tube_type, length, width_or_dia, secondary_width, thickness)
         weight_formula, weight_values = _weight_step_text(part.component_type, part.tube_type, length, width_or_dia, secondary_width, thickness, density)
-        gross_weight, scrap_weight, stock_approach = _stock_for_part(part.component_type, net_weight, length, width_or_dia, thickness, density, qty)
+        gross_weight, scrap_weight, stock_approach, stock = _stock_for_part(part.component_type, net_weight, length, width_or_dia, thickness, density, qty)
         laser_length_mm = max(float(part.cutting_metrics.laser_cutting_length_mm or 0), 0.0)
         press_hits = max(int(part.cutting_metrics.press_machine_hits_count or 0), 0)
         bends = max(int(part.bends_per_part or 0), 0)
@@ -276,6 +276,23 @@ def calculate_structured_cost_breakdown(
         material_cost = max(gross_material_cost - scrap_value, 0)
         single_laser = material_cost + laser_cutting_cost + bending_cost + painting_cost
         single_machine = material_cost + machine_punching_cost + bending_cost + painting_cost
+        parts_per_stock = max(int(stock["parts_per_stock"]), 1)
+        stock_weight = float(stock["stock_weight_kg"])
+        if part.component_type.lower() in {"tube", "rod", "accessory"}:
+            gross_weight_formula = "Gross unit raw material weight (kg/part) = full stock bar weight (kg/bar) / parts cut per bar"
+            stock_values = (
+                f"Stock length = 6000 mm; Part length = {fmt_number(length)} mm; "
+                f"Parts per stock = floor(6000 / {fmt_number(length)}) = {parts_per_stock}; "
+                f"Full stock weight = {fmt_number(net_weight)} kg x (6000 / {fmt_number(length)}) = {fmt_number(stock_weight)} kg; "
+                f"Gross unit weight = {fmt_number(stock_weight)} kg / {parts_per_stock} = {fmt_number(gross_weight)} kg; "
+                f"Leftover per full stock = 6000 - ({parts_per_stock} x {fmt_number(length)}) = {fmt_number(float(stock.get('leftover_per_stock_mm', 0)))} mm"
+            )
+        else:
+            gross_weight_formula = "Gross unit raw material weight (kg/part) = full stock sheet weight (kg/sheet) / parts nested per sheet"
+            stock_values = (
+                f"{stock_approach}; Full sheet weight = 2500 mm x 1250 mm x {fmt_number(thickness)} mm x {density} kg/mm3 = {fmt_number(stock_weight)} kg; "
+                f"Gross unit weight = {fmt_number(stock_weight)} kg / {parts_per_stock} = {fmt_number(gross_weight)} kg"
+            )
 
         steps = [
             CalculationStep(
@@ -289,15 +306,29 @@ def calculate_structured_cost_breakdown(
                 section="Weight",
                 name=f"Part {part.part_number} net weight",
                 formula=weight_formula,
-                substituted_values=weight_values,
+                substituted_values=f"{weight_values}; Net finished weight = {fmt_number(net_weight)} kg",
                 result=kg(net_weight),
             ),
             CalculationStep(
                 section="Stock",
                 name=f"Part {part.part_number} gross RM weight",
-                formula="Gross unit raw material weight (kg/part) = stock weight (kg/stock) / parts per stock",
-                substituted_values=stock_approach,
+                formula=gross_weight_formula,
+                substituted_values=stock_values,
                 result=kg(gross_weight),
+            ),
+            CalculationStep(
+                section="Stock",
+                name=f"Part {part.part_number} scrap waste weight",
+                formula="Scrap / waste weight (kg/part) = gross unit raw material weight - net finished weight",
+                substituted_values=f"{fmt_number(gross_weight)} kg - {fmt_number(net_weight)} kg = {fmt_number(scrap_weight)} kg",
+                result=kg(scrap_weight),
+            ),
+            CalculationStep(
+                section="Stock",
+                name=f"Part {part.part_number} total set gross weight",
+                formula="Total set gross weight (kg) = gross unit raw material weight (kg/part) x quantity",
+                substituted_values=f"{fmt_number(gross_weight)} kg/part x {qty} parts = {fmt_number(gross_weight * qty)} kg",
+                result=kg(gross_weight * qty),
             ),
             CalculationStep(
                 section="Cost",
@@ -310,35 +341,56 @@ def calculate_structured_cost_breakdown(
                 section="Stock",
                 name=f"Part {part.part_number} scrap resale value",
                 formula="Scrap resale value (INR) = scrap weight (kg) x scrap rate (INR/kg)",
-                substituted_values=f"{fmt_number(scrap_weight)} kg x {CURRENCY_UNIT} {fmt_number(scrap_rate_per_kg, 2)}/kg",
+                substituted_values=f"{fmt_number(scrap_weight)} kg x {CURRENCY_UNIT} {fmt_number(scrap_rate_per_kg, 2)}/kg = {money(scrap_value)}",
                 result=money(scrap_value),
+            ),
+            CalculationStep(
+                section="Input",
+                name=f"Part {part.part_number} laser cutting length",
+                formula="Laser cutting length (mm) = extracted drawing cut-path length",
+                substituted_values=f"Extracted cut-path length = {fmt_number(laser_length_mm)} mm",
+                result=f"{fmt_number(laser_length_mm)} mm",
             ),
             CalculationStep(
                 section="Process",
                 name=f"Part {part.part_number} laser cutting cost",
                 formula="Laser cutting cost (INR) = laser cutting length (m) x laser cut rate (INR/m)",
-                substituted_values=f"{fmt_number(laser_length_mm)} mm / 1000 = {fmt_number(laser_length_mm / 1000)} m; {fmt_number(laser_length_mm / 1000)} m x {CURRENCY_UNIT} {fmt_number(laser_cutting_rate_per_meter, 2)}/m",
+                substituted_values=f"{fmt_number(laser_length_mm)} mm / 1000 = {fmt_number(laser_length_mm / 1000)} m; {fmt_number(laser_length_mm / 1000)} m x {CURRENCY_UNIT} {fmt_number(laser_cutting_rate_per_meter, 2)}/m = {money(laser_cutting_cost)}",
                 result=money(laser_cutting_cost),
+            ),
+            CalculationStep(
+                section="Input",
+                name=f"Part {part.part_number} press machine hits",
+                formula="Press machine hits = extracted drawing punch / press feature count",
+                substituted_values=f"Extracted press feature count = {press_hits} hits",
+                result=f"{press_hits} hits",
             ),
             CalculationStep(
                 section="Process",
                 name=f"Part {part.part_number} press cutting cost",
                 formula="Press / punching cost (INR) = press hit count (hits) x press cut rate (INR/hit)",
-                substituted_values=f"{press_hits} hits x {CURRENCY_UNIT} {fmt_number(press_machine_rate_per_hit, 2)}/hit",
+                substituted_values=f"{press_hits} hits x {CURRENCY_UNIT} {fmt_number(press_machine_rate_per_hit, 2)}/hit = {money(machine_punching_cost)}",
                 result=money(machine_punching_cost),
+            ),
+            CalculationStep(
+                section="Input",
+                name=f"Part {part.part_number} bend count",
+                formula="Bend count = extracted drawing bend count per part",
+                substituted_values=f"Extracted bend count = {bends} bends",
+                result=f"{bends} bends",
             ),
             CalculationStep(
                 section="Process",
                 name=f"Part {part.part_number} bending cost",
                 formula="Bending cost (INR) = bend count (bends) x bend rate (INR/bend)",
-                substituted_values=f"{bends} bends x {CURRENCY_UNIT} {fmt_number(bend_rate_per_bend, 2)}/bend",
+                substituted_values=f"{bends} bends x {CURRENCY_UNIT} {fmt_number(bend_rate_per_bend, 2)}/bend = {money(bending_cost)}",
                 result=money(bending_cost),
             ),
             CalculationStep(
                 section="Surface",
                 name=f"Part {part.part_number} painting cost",
                 formula="Painting cost (INR) = surface area (m2) x painting rate (INR/m2)",
-                substituted_values=f"{fmt_number(surface_area, 4)} m2 x {CURRENCY_UNIT} {fmt_number(painting_rate_per_m2, 2)}/m2",
+                substituted_values=f"{fmt_number(surface_area, 4)} m2 x {CURRENCY_UNIT} {fmt_number(painting_rate_per_m2, 2)}/m2 = {money(painting_cost)}",
                 result=money(painting_cost),
             ),
             CalculationStep(
