@@ -9,153 +9,26 @@ import re
 from fastapi import HTTPException
 
 from app.core.config import ALLOWED_GEMINI_MODELS
-from app.models.schemas import ExtractedDimensions, ReferenceExtraction, StructuredExtraction
+from app.diagnostics import cloud_print
+from app.models.schemas import ReferenceExtraction, StructuredExtraction
 
-
-EXTRACTION_PROMPT = """
-You are extracting manufacturing costing inputs from an engineering drawing image.
-Return only a compact valid JSON object. Do not use markdown. Do not add comments.
-Every property must be separated by a comma. Use double quotes for all JSON keys.
-The JSON object must match these keys:
-part_name, raw_material_type, raw_material_code, component_materials,
-main_material_form, main_profile_shape, main_profile_is_hollow,
-main_profile_length_mm, main_profile_outer_a_mm, main_profile_outer_b_mm,
-main_profile_diameter_mm, main_profile_thickness_mm,
-square_tube_length_mm, square_tube_outer_mm, square_tube_thickness_mm,
-bottom_plate_l_mm, bottom_plate_w_mm, bottom_plate_t_mm,
-top_plate_l_mm, top_plate_w_mm, top_plate_t_mm,
-handle_od_mm, handle_thickness_mm, handle_length_mm,
-screw_piece_dia_mm, screw_piece_length_mm, screw_piece_qty,
-chair_angle_weight_per_m, chair_angle_length_mm,
-cutting_length_mm, cutting_surface_count, weld_length_mm, bend_count, confidence, notes.
-
-Use numbers in millimeters. If a value is not visible, use null and explain in notes.
-Material rule:
-- Detect the raw material from title block, BOM, grade/specification, or item notes.
-- raw_material_type must be one of: ms, ss, aluminium, copper, unknown.
-- raw_material_code should preserve the visible material code, for example C-K201.
-- C-K201/K201/304/316/stainless means stainless steel unless a note says otherwise.
-- MS/IS2062/E250/E350 means mild steel.
-- AL/6061/6082 means aluminium.
-- CU/copper/C11000 means copper.
-- component_materials can list visible item-level material differences as objects with item, material_type, material_code, and note.
-Raw material rule:
-- Identify whether each part is made from rod/bar/profile or blank sheet/plate.
-- Rod/bar/profile supplier standard length is 6000 mm.
-- Rod/profile can be solid or hollow.
-- Rod/profile cross section can be circular, rectangular, or square.
-- For main_material_form use one of: rod_profile, blank_sheet, unknown.
-- For main_profile_shape use one of: circular, square, rectangular, unknown.
-- main_profile_is_hollow should be true for tube/pipe/SHS/RHS and false for solid rod/bar.
-- For circular rod/profile, fill main_profile_diameter_mm.
-- For square rod/profile, fill main_profile_outer_a_mm and main_profile_outer_b_mm with the same value.
-- For rectangular rod/profile, fill main_profile_outer_a_mm and main_profile_outer_b_mm.
-- For hollow circular sections, use outside diameter and wall thickness.
-- For hollow rectangular/square sections, use outer A, outer B, and wall thickness.
-- For blank sheet/plate, use length x breadth x thickness.
-- Rectangle/square sheet supplier standard size is 2500 x 1250 mm.
-Cutting dimension rule:
-- Rectangular/square blank cutting length = 2 x (L + B).
-- Circular cutting length = pi x diameter.
-- Total cutting length should include profile cut lengths plus visible blank/perimeter cuts.
-- cutting_surface_count is the number of separate cut surfaces/features. For example four holes on faces A/B/C/D means 4 surfaces.
-For cutting_length_mm, estimate from visible tube/profile lengths plus plate perimeters and circular/rectangular cuts.
-For weld_length_mm, estimate from visible weld symbols and joint perimeters.
-Do not invent hidden detail drawing dimensions.
-"""
 
 STRUCTURED_EXTRACTION_PROMPT = """
-You are a deterministic sheet metal feature extraction engine.
-You are looking at this engineering drawing to pull raw parameters for a cost calculation.
-Return only a compact valid JSON object. Do not use markdown. Do not add comments.
-Use double quotes for all keys and valid JSON arrays/objects.
+Extract only verified calculation inputs from the engineering drawing and return valid JSON with exactly this shape:
+{"raw_material_type":string|null,"raw_material_code":string|null,"per_part_breakdown":[{"part_number":string,"component_name":string|null,"component_type":"tube"|"sheet"|"rod"|"accessory"|"unknown","profile":{"shape":string,"is_hollow":boolean}|null,"material_type":string|null,"material_code":string|null,"material_grade":string|null,"material_specification":string|null,"per_set_qty":number,"dimensions":{"length_mm":number|null,"width_mm":number|null,"height_mm":number|null,"outer_diameter_mm":number|null,"thickness_mm":number|null},"holes":[{"hole_type":string,"diameter_mm":number|null,"quantity_per_part":number|null,"through":boolean|null}],"slots":[{"slot_type":string,"length_mm":number|null,"width_mm":number|null,"quantity_per_part":number|null,"through":boolean|null}],"threads":[{"thread_size":string|null,"nominal_diameter_mm":number|null,"quantity_per_part":number|null,"through":boolean|null,"thread_depth_mm":number|null}],"notches":[],"cutouts":[],"chamfers":[],"bends":[],"flat_pattern":{"outer_contour":{"geometry_type":"polygon","points_mm":[{"x":number,"y":number}]}|null,"holes":[],"slots":[],"threads":[],"notches":[],"cutouts":[],"chamfers":[],"bend_lines":[]}|null,"bends_per_part":number|null,"referenced_drawing_number":string|null,"nesting_constraints":{"grain_direction":string|null,"rotation_allowed":boolean|null,"mirror_pair_required":boolean|null}|null}],"assembly_fabrication":{"welding_length_mm":number|null}}
 
-STRICT RULES:
-1. Extract ONLY the literal text, numbers, dimensions, notes, symbols, and geometry explicitly printed on the document.
-2. If a specific dimension, feature count, sheet thickness, wall thickness, outer flange width, hole diameter, bend count, weld length, or material code is missing, blurry, hidden, or overlapping with another line, do NOT guess, extrapolate, infer, or estimate it.
-3. For any text field you cannot verify with 100% certainty, output exactly "NULL - Insufficient Data".
-4. For any numeric field you cannot verify with 100% certainty, output null and add "NULL - Insufficient Data" in that part's notes.
-5. Do not calculate costs, weights, scrap, or painting. Backend will calculate those from verified inputs only.
-
-Return this exact top-level shape:
-{
-  "currency": "INR",
-  "part_name": string or null,
-  "raw_material_type": "ms" | "ss" | "aluminium" | "copper" | "unknown",
-  "raw_material_code": string or null,
-  "per_part_breakdown": [
-    {
-      "part_number": string,
-      "component_name": string or null,
-      "component_type": "tube" | "sheet" | "rod" | "accessory" | "unknown",
-      "tube_type": string,
-      "material_type": "ms" | "ss" | "aluminium" | "copper" | "unknown" | null,
-      "material_code": string or null,
-      "per_set_qty": number,
-      "dimensions": {
-        "length_mm": number or null,
-        "width_or_outer_dia_mm": number or null,
-        "secondary_width_mm": number or null,
-        "thickness_or_wall_thickness_mm": number or null
-      },
-      "image_region": {
-        "x_min": number or null,
-        "y_min": number or null,
-        "x_max": number or null,
-        "y_max": number or null,
-        "source": string
-      },
-      "bends_per_part": number,
-      "cutting_metrics": {
-        "laser_cutting_length_mm": number,
-        "press_machine_hits_count": number
-      },
-      "nesting_layout_hint": {
-        "nesting_strategy": string,
-        "recommended_grain_or_cut_direction": string
-      },
-      "notes": []
-    }
-  ],
-  "assembly_level_fabrication": {
-    "total_assembly_welding_length_mm": number,
-    "notes": []
-  },
-  "referenced_drawings": [
-    {
-      "drawing_number": string,
-      "file_name_hint": string or null,
-      "referenced_by_part_number": string or null,
-      "referenced_by_component": string or null,
-      "reason": string,
-      "required_for_costing": true
-    }
-  ],
-  "confidence": number,
-  "notes": []
-}
-
-Extraction rules:
-- Extract all visible BOM/detail-table parts, not just the main tube.
-- Detect child/detail drawing references from BOM/detail drawing columns, notes, remarks, or callouts. Example: if CHAIR ANGLE-RH references LS10269, add it to referenced_drawings with drawing_number "LS10269", file_name_hint "LS10269.tif", referenced_by_component "CHAIR ANGLE-RH", and reason explaining which dimensions/features may be missing.
-- Do not add the current drawing number itself to referenced_drawings.
-- If a referenced child drawing is needed to verify missing geometry, bend count, cut length, holes, or weight, required_for_costing must be true.
-- Do not calculate costs, weights, scrap, or painting. Backend will calculate those.
-- Use null where dimensions are not visible.
-- For square tube 45x45x4, component_type is tube, tube_type is "Square 45x45x4", width_or_outer_dia_mm is 45, secondary_width_mm is 45, thickness is 4.
-- For round tube Dia 19x2, width_or_outer_dia_mm is 19 and thickness is 2.
-- For a rectangular/square sheet or plate, length and width go into length_mm and width_or_outer_dia_mm; thickness goes into thickness_or_wall_thickness_mm.
-- For a rod/bar/accessory, length goes into length_mm and diameter/outer size goes into width_or_outer_dia_mm.
-- image_region is the approximate visible drawing/detail region for that specific part, not the whole page.
-- image_region coordinates must be normalized from 0 to 1000 relative to the full drawing image: x_min/y_min is top-left, x_max/y_max is bottom-right.
-- Use only the actual drawing/detail geometry region for image_region. Never use the BOM/table row, title block, material table, or text-only row as image_region.
-- If only the BOM row identifies the part and no specific drawing/detail geometry can be verified, set all image_region coordinates to null and source to "NULL - Insufficient Data".
-- If the specific part location cannot be verified, set all image_region coordinates to null and source to "NULL - Insufficient Data".
-- Detect bends per part from bend/fold/formed angle/tube bend indications.
-- laser_cutting_length_mm is the perimeter/profile cut length visible for that part. Rectangular perimeter = 2 x (L + W). Circular cut = pi x diameter.
-- press_machine_hits_count is number of punched/pressed cut surfaces/features if visible. If unclear, use 0 and explain in notes.
-- total_assembly_welding_length_mm should come from visible weld symbols/locations; if unclear estimate from joint perimeters and explain in notes.
-- Material detection: C-K201/K201/304/316/stainless means ss. MS/IS2062/E250/E350 means ms. AL/6061/6082 means aluminium. CU/copper/C11000 means copper.
+Rules:
+- Preserve part_number and component_name exactly as printed in the BOM. Convert printed NIL to JSON null.
+- Populate material_type and material_code for every part. When the drawing specifies one assembly/raw material for all parts and does not show a different part material, copy that drawing-level material into each part.
+- Always return bends_per_part as an integer. Return 0 when the part has no visible bend lines, bend callouts, formed profile, or bend operation; otherwise return the verified bend count.
+- Extract BOM quantity as per_set_qty, referenced child drawing into referenced_drawing_number, and keep specification, code, and grade separate.
+- Use null for every unverified value. Never guess and never replace unknown values with zero.
+- Never return a generic features key. Extract holes, slots, threads, notches, cutouts, chamfers, and bends into their named arrays.
+- For sheet-metal parts, put developed outer-contour points, holes, slots, and bend lines inside flat_pattern. Do not duplicate those items in the part-level arrays.
+- Use part-level geometry arrays for tubes, rods, and other parts without a developed flat pattern.
+- nesting_constraints may contain only restrictions explicitly printed on the drawing. Do not recommend a nesting strategy.
+- Do not return currency, part name, rates, costs, weights, cutting metrics, process selection, image regions, confidence, sources, or notes.
+- Do not calculate laser length or press hits. The backend derives them after user process selection.
 """
 
 
@@ -233,6 +106,19 @@ def clean_json_response(text: str) -> dict:
         return json.loads(repair_json_response(text))
 
 
+def log_ai_json_response(*, response_type: str, provider: str, model: str, payload: dict) -> None:
+    cloud_print(
+        "AI_JSON_RESPONSE",
+        message=f"AI JSON RESPONSE | {response_type}",
+        ai={
+            "provider": provider,
+            "model": model,
+            "response_type": response_type,
+            "response": payload,
+        },
+    )
+
+
 def _preprocess_image(
     content: bytes,
     content_type: str | None,
@@ -273,70 +159,13 @@ def image_bytes_for_preview(content: bytes, content_type: str | None, filename: 
     return _preprocess_image(content, content_type, filename, max_side_px=3200)
 
 
-def extract_dimensions_with_gemini(content: bytes, content_type: str | None) -> ExtractedDimensions:
-    provider = os.getenv("GEMINI_PROVIDER", "gemini_api").lower()
-    api_key = os.getenv("GEMINI_API_KEY")
-    project = os.getenv("GOOGLE_CLOUD_PROJECT")
-    location = os.getenv("GOOGLE_CLOUD_LOCATION", "asia-south1")
-    model = os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
-
-    if provider not in {"gemini_api", "vertex_ai"}:
-        raise HTTPException(status_code=503, detail="GEMINI_PROVIDER must be gemini_api or vertex_ai.")
-    if provider == "gemini_api" and (not api_key or api_key == "your-gemini-api-key"):
-        raise HTTPException(status_code=503, detail="Set GEMINI_API_KEY to call Gemini API for dimension extraction.")
-    if provider == "vertex_ai" and not project:
-        raise HTTPException(status_code=503, detail="Set GOOGLE_CLOUD_PROJECT to call Gemini through Vertex AI.")
-    if model not in ALLOWED_GEMINI_MODELS:
-        raise HTTPException(status_code=503, detail=f"GEMINI_MODEL must be one of: {', '.join(sorted(ALLOWED_GEMINI_MODELS))}.")
-
-    try:
-        from google import genai
-        from google.genai import types
-    except ImportError as exc:
-        raise HTTPException(status_code=500, detail="Install google-genai to enable Gemini API extraction.") from exc
-
-    image_content, mime_type = image_bytes_for_gemini(content, content_type)
-    client = genai.Client(vertexai=True, project=project, location=location) if provider == "vertex_ai" else genai.Client(api_key=api_key)
-
-    try:
-        response = client.models.generate_content(
-            model=model,
-            contents=[types.Part.from_bytes(data=image_content, mime_type=mime_type), EXTRACTION_PROMPT],
-            config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json"),
-        )
-    except Exception as exc:
-        message = str(exc)
-        if "API_KEY_INVALID" in message or "API key not valid" in message:
-            raise HTTPException(status_code=401, detail="Gemini API key is invalid. Create/copy a valid key from Google AI Studio and update GEMINI_API_KEY.") from exc
-        if "RESOURCE_EXHAUSTED" in message or "Quota exceeded" in message:
-            raise HTTPException(status_code=429, detail=f"Gemini quota is exhausted for model {model}. Try another available model, wait for quota reset, or enable billing/quota.") from exc
-        if "NOT_FOUND" in message or "no longer available" in message:
-            raise HTTPException(status_code=404, detail=f"Gemini model {model} is not available for this project/API key.") from exc
-        if "BILLING_DISABLED" in message or "requires billing to be enabled" in message:
-            raise HTTPException(status_code=402, detail="This Gemini request requires billing for the selected Google project.") from exc
-        if "SERVICE_DISABLED" in message:
-            raise HTTPException(status_code=503, detail="Gemini/Vertex AI API is disabled for this project. Enable the API, then retry.") from exc
-        if "PERMISSION_DENIED" in message:
-            raise HTTPException(status_code=403, detail=f"Gemini API permission denied: {message}") from exc
-        raise HTTPException(status_code=502, detail=f"Gemini API extraction failed: {message}") from exc
-
-    if not response.text:
-        raise HTTPException(status_code=502, detail="Gemini returned an empty extraction response.")
-
-    try:
-        extracted = ExtractedDimensions.model_validate(clean_json_response(response.text))
-    except (json.JSONDecodeError, ValueError) as exc:
-        raise HTTPException(status_code=502, detail=f"Gemini returned a response that could not be parsed as extraction JSON: {exc}") from exc
-
-    extracted.source = "gemini_api"
-    return extracted
-
-
 def _gemini_generate_json(
     content: bytes,
     content_type: str | None,
     prompt: str,
     child_drawings: list[tuple[str, bytes, str | None]] | None = None,
+    *,
+    response_type: str,
 ) -> dict:
     provider = os.getenv("GEMINI_PROVIDER", "gemini_api").lower()
     api_key = os.getenv("GEMINI_API_KEY")
@@ -395,7 +224,14 @@ def _gemini_generate_json(
 
     if not response.text:
         raise HTTPException(status_code=502, detail="Gemini returned an empty extraction response.")
-    return clean_json_response(response.text)
+    response_json = clean_json_response(response.text)
+    log_ai_json_response(
+        response_type=response_type,
+        provider=provider,
+        model=model,
+        payload=response_json,
+    )
+    return response_json
 
 
 def extract_structured_with_gemini(
@@ -405,7 +241,13 @@ def extract_structured_with_gemini(
 ) -> StructuredExtraction:
     try:
         return StructuredExtraction.model_validate(
-            _gemini_generate_json(content, content_type, STRUCTURED_EXTRACTION_PROMPT, child_drawings)
+            _gemini_generate_json(
+                content,
+                content_type,
+                STRUCTURED_EXTRACTION_PROMPT,
+                child_drawings,
+                response_type="structured_extraction",
+            )
         )
     except (json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(status_code=502, detail=f"Gemini returned a response that could not be parsed as structured extraction JSON: {exc}") from exc
@@ -414,7 +256,12 @@ def extract_structured_with_gemini(
 def extract_references_with_gemini(content: bytes, content_type: str | None) -> ReferenceExtraction:
     try:
         extraction = ReferenceExtraction.model_validate(
-            _gemini_generate_json(content, content_type, REFERENCE_EXTRACTION_PROMPT)
+            _gemini_generate_json(
+                content,
+                content_type,
+                REFERENCE_EXTRACTION_PROMPT,
+                response_type="reference_extraction",
+            )
         )
     except (json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(status_code=502, detail=f"Gemini returned a response that could not be parsed as reference JSON: {exc}") from exc

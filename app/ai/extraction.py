@@ -11,6 +11,7 @@ from google.genai import types
 from app import state
 from app.ai.prompts import DRAWING_EXTRACTION_PROMPT
 from app.ai.schemas import ExtractedBOMAssembly
+from app.diagnostics import cloud_print
 from app.services.costing import premium_calculate_advanced_geometries, premium_generate_process_sequence_advisory
 
 
@@ -48,6 +49,17 @@ async def async_analyze_single_drawing(file_bytes: bytes, filename: str) -> Dict
     )
     
     bom_dataset = json.loads(response.text)
+    cloud_print(
+        "AI_JSON_RESPONSE",
+        message=f"AI JSON RESPONSE | drawing_bom | {filename}",
+        ai={
+            "provider": os.getenv("GEMINI_PROVIDER", "gemini_api"),
+            "model": os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview"),
+            "response_type": "drawing_bom",
+            "filename": filename,
+            "response": bom_dataset,
+        },
+    )
     drg_id = bom_dataset.get("current_drawing_id", filename.split(".")[0]).strip().upper()
     target_wt = bom_dataset.get("target_blueprint_weight_kg", None)
     

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 from app.core.config import (
     RATE_SS_PER_KG,
@@ -88,56 +88,6 @@ class GeminiConfig(BaseModel):
     pillow_installed: bool
 
 
-class ExtractedDimensions(BaseModel):
-    part_name: str = "Pillar Assembly"
-    raw_material_type: str | None = None
-    raw_material_code: str | None = None
-    component_materials: list[dict[str, str | float | int | None]] = Field(default_factory=list)
-    main_material_form: str | None = None
-    main_profile_shape: str | None = None
-    main_profile_is_hollow: bool | None = None
-    main_profile_length_mm: float | None = None
-    main_profile_outer_a_mm: float | None = None
-    main_profile_outer_b_mm: float | None = None
-    main_profile_diameter_mm: float | None = None
-    main_profile_thickness_mm: float | None = None
-    square_tube_length_mm: float | None = None
-    square_tube_outer_mm: float | None = None
-    square_tube_thickness_mm: float | None = None
-    bottom_plate_l_mm: float | None = None
-    bottom_plate_w_mm: float | None = None
-    bottom_plate_t_mm: float | None = None
-    top_plate_l_mm: float | None = None
-    top_plate_w_mm: float | None = None
-    top_plate_t_mm: float | None = None
-    handle_od_mm: float | None = None
-    handle_thickness_mm: float | None = None
-    handle_length_mm: float | None = None
-    screw_piece_dia_mm: float | None = None
-    screw_piece_length_mm: float | None = None
-    screw_piece_qty: int | None = None
-    chair_angle_weight_per_m: float | None = None
-    chair_angle_length_mm: float | None = None
-    cutting_length_mm: float | None = None
-    cutting_surface_count: int | None = None
-    weld_length_mm: float | None = None
-    bend_count: int | None = None
-    confidence: float = 0
-    notes: list[str] = []
-    source: Literal["gemini_api"] = "gemini_api"
-
-    @field_validator("notes", mode="before")
-    @classmethod
-    def normalize_notes(cls, value: object) -> list[str]:
-        if value is None:
-            return []
-        if isinstance(value, str):
-            return [value]
-        if isinstance(value, list):
-            return [str(item) for item in value]
-        return [str(value)]
-
-
 class EstimateResponse(BaseModel):
     part_name: str
     likely_use: str
@@ -158,21 +108,104 @@ class EstimateResponse(BaseModel):
 
 class ExtractedPartDimensions(BaseModel):
     length_mm: float | None = None
-    width_or_outer_dia_mm: float | None = None
-    secondary_width_mm: float | None = None
-    thickness_or_wall_thickness_mm: float | None = None
+    width_mm: float | None = Field(default=None, validation_alias=AliasChoices("width_mm", "width_or_outer_dia_mm"))
+    height_mm: float | None = Field(default=None, validation_alias=AliasChoices("height_mm", "secondary_width_mm"))
+    outer_diameter_mm: float | None = None
+    thickness_mm: float | None = Field(default=None, validation_alias=AliasChoices("thickness_mm", "thickness_or_wall_thickness_mm"))
 
 
-class ExtractedCuttingMetrics(BaseModel):
+class CalculatedCuttingMetrics(BaseModel):
     laser_cutting_length_mm: float = 0
     press_machine_hits_count: int = 0
+    outer_profile_cut_length_mm: float = 0
+    internal_feature_cut_length_mm: float = 0
+    internal_feature_count: int = 0
 
-    @field_validator("laser_cutting_length_mm", "press_machine_hits_count", mode="before")
+    @field_validator(
+        "laser_cutting_length_mm",
+        "press_machine_hits_count",
+        "outer_profile_cut_length_mm",
+        "internal_feature_cut_length_mm",
+        "internal_feature_count",
+        mode="before",
+    )
     @classmethod
     def normalize_missing_cutting_metric(cls, value: object) -> object:
         if value is None or value == "":
             return 0
         return value
+
+
+class ExtractedHole(BaseModel):
+    hole_type: str = "plain"
+    diameter_mm: float | None = None
+    quantity_per_part: int | None = None
+    through: bool | None = None
+
+
+class ExtractedSlot(BaseModel):
+    slot_type: str = "obround"
+    length_mm: float | None = None
+    width_mm: float | None = None
+    quantity_per_part: int | None = None
+    through: bool | None = None
+
+
+class ExtractedThread(BaseModel):
+    thread_size: str | None = None
+    nominal_diameter_mm: float | None = None
+    quantity_per_part: int | None = None
+    through: bool | None = None
+    thread_depth_mm: float | None = None
+
+
+class ExtractedRectangularFeature(BaseModel):
+    length_mm: float | None = None
+    width_mm: float | None = None
+    quantity_per_part: int | None = None
+
+
+class ExtractedChamfer(BaseModel):
+    size_mm: float | None = None
+    angle_deg: float | None = None
+    quantity_per_part: int | None = None
+
+
+class ExtractedBend(BaseModel):
+    angle_deg: float | None = None
+    inside_radius_mm: float | None = None
+    bend_length_mm: float | None = None
+
+
+class GeometryPoint(BaseModel):
+    x: float
+    y: float
+
+
+class ExtractedOuterContour(BaseModel):
+    geometry_type: str = "polygon"
+    points_mm: list[GeometryPoint] = Field(default_factory=list)
+
+
+class ExtractedFlatPattern(BaseModel):
+    outer_contour: ExtractedOuterContour | None = None
+    holes: list[ExtractedHole] = Field(default_factory=list)
+    slots: list[ExtractedSlot] = Field(default_factory=list)
+    threads: list[ExtractedThread] = Field(default_factory=list)
+    notches: list[ExtractedRectangularFeature] = Field(default_factory=list)
+    cutouts: list[ExtractedRectangularFeature] = Field(default_factory=list)
+    chamfers: list[ExtractedChamfer] = Field(default_factory=list)
+    bend_lines: list[ExtractedBend] = Field(default_factory=list)
+
+class ExtractedProfile(BaseModel):
+    shape: str
+    is_hollow: bool
+
+
+class NestingConstraints(BaseModel):
+    grain_direction: str | None = None
+    rotation_allowed: bool | None = None
+    mirror_pair_required: bool | None = None
 
 
 class NestingLayoutHint(BaseModel):
@@ -206,40 +239,30 @@ class ExtractedCostPart(BaseModel):
     part_number: str
     component_name: str | None = None
     component_type: str
-    tube_type: str = "NA"
+    profile: ExtractedProfile | None = None
     material_type: str | None = None
     material_code: str | None = None
+    material_grade: str | None = None
+    material_specification: str | None = None
     per_set_qty: int = 1
     dimensions: ExtractedPartDimensions = Field(default_factory=ExtractedPartDimensions)
-    image_region: PartImageRegion = Field(default_factory=PartImageRegion)
-    bends_per_part: int = 0
-    cutting_metrics: ExtractedCuttingMetrics = Field(default_factory=ExtractedCuttingMetrics)
-    nesting_layout_hint: NestingLayoutHint = Field(default_factory=NestingLayoutHint)
-    notes: list[str] = Field(default_factory=list)
+    holes: list[ExtractedHole] = Field(default_factory=list)
+    slots: list[ExtractedSlot] = Field(default_factory=list)
+    threads: list[ExtractedThread] = Field(default_factory=list)
+    notches: list[ExtractedRectangularFeature] = Field(default_factory=list)
+    cutouts: list[ExtractedRectangularFeature] = Field(default_factory=list)
+    chamfers: list[ExtractedChamfer] = Field(default_factory=list)
+    bends: list[ExtractedBend] = Field(default_factory=list)
+    flat_pattern: ExtractedFlatPattern | None = None
+    bends_per_part: int | None = None
+    referenced_drawing_number: str | None = None
+    nesting_constraints: NestingConstraints | None = None
 
     @field_validator("part_number", "component_type", mode="before")
     @classmethod
     def normalize_required_part_text(cls, value: object) -> str:
         if value is None or value == "":
             return "unknown"
-        return str(value)
-
-    @field_validator("notes", mode="before")
-    @classmethod
-    def normalize_part_notes(cls, value: object) -> list[str]:
-        if value is None:
-            return []
-        if isinstance(value, str):
-            return [value]
-        if isinstance(value, list):
-            return [str(item) for item in value]
-        return [str(value)]
-
-    @field_validator("tube_type", mode="before")
-    @classmethod
-    def normalize_tube_type(cls, value: object) -> str:
-        if value is None or value == "":
-            return "NA"
         return str(value)
 
     @field_validator("per_set_qty", mode="before")
@@ -253,19 +276,18 @@ class ExtractedCostPart(BaseModel):
     @classmethod
     def normalize_missing_bends(cls, value: object) -> object:
         if value is None or value == "":
-            return 0
+            return None
         return value
 
 
 class ExtractedAssemblyFabrication(BaseModel):
-    total_assembly_welding_length_mm: float = 0
-    notes: list[str] = Field(default_factory=list)
+    welding_length_mm: float | None = Field(default=None, validation_alias=AliasChoices("welding_length_mm", "total_assembly_welding_length_mm"))
 
-    @field_validator("total_assembly_welding_length_mm", mode="before")
+    @field_validator("welding_length_mm", mode="before")
     @classmethod
     def normalize_missing_weld_length(cls, value: object) -> object:
         if value is None or value == "":
-            return 0
+            return None
         return value
 
 
@@ -321,15 +343,13 @@ class BatchReferenceExtraction(BaseModel):
 
 
 class StructuredExtraction(BaseModel):
-    currency: str = "INR"
-    part_name: str | None = None
     raw_material_type: str | None = None
     raw_material_code: str | None = None
     per_part_breakdown: list[ExtractedCostPart] = Field(default_factory=list)
-    assembly_level_fabrication: ExtractedAssemblyFabrication = Field(default_factory=ExtractedAssemblyFabrication)
-    referenced_drawings: list[ReferencedDrawing] = Field(default_factory=list)
-    confidence: float = 0
-    notes: list[str] = Field(default_factory=list)
+    assembly_fabrication: ExtractedAssemblyFabrication = Field(
+        default_factory=ExtractedAssemblyFabrication,
+        validation_alias=AliasChoices("assembly_fabrication", "assembly_level_fabrication"),
+    )
 
 
 class WeightLedger(BaseModel):
@@ -352,6 +372,11 @@ class CalculatedCosts(BaseModel):
 
 
 class CostedPartBreakdown(ExtractedCostPart):
+    tube_type: str = "NA"
+    image_region: PartImageRegion = Field(default_factory=PartImageRegion)
+    nesting_layout_hint: NestingLayoutHint = Field(default_factory=NestingLayoutHint)
+    notes: list[str] = Field(default_factory=list)
+    cutting_metrics: CalculatedCuttingMetrics = Field(default_factory=CalculatedCuttingMetrics)
     surface_area_sq_meter: float
     weight_ledger: WeightLedger
     calculated_costs: CalculatedCosts
@@ -369,6 +394,8 @@ class AssemblyLevelFabrication(BaseModel):
 class StructuredCostBreakdown(BaseModel):
     currency: str = "INR"
     part_name: str | None = None
+    raw_material_type: str | None = None
+    raw_material_code: str | None = None
     per_part_breakdown: list[CostedPartBreakdown]
     assembly_level_fabrication: AssemblyLevelFabrication
     referenced_drawings: list[ReferencedDrawing] = Field(default_factory=list)

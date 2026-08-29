@@ -25,7 +25,9 @@ from app.models.schemas import (
     EstimateResponse,
     LineItem,
     MaterialSummary,
+    NestingLayoutHint,
     ProcessBreakdown,
+    ReferencedDrawing,
     StockSummary,
     StructuredCostBreakdown,
     StructuredExtraction,
@@ -63,6 +65,69 @@ def _money_input(value: float | None, fallback: float = 0.0) -> float:
     if not math.isfinite(numeric):
         return fallback
     return max(numeric, 0.0)
+
+
+def _geometry_cutting_metrics(part) -> tuple[float, int, list[str]]:
+    """Derive process-neutral internal cut length and one-hit geometry count."""
+    perimeter_mm = 0.0
+    feature_count = 0
+    warnings: list[str] = []
+    geometry = part.flat_pattern if part.flat_pattern is not None else part
+
+    for hole in geometry.holes:
+        quantity = hole.quantity_per_part
+        if quantity is None or quantity < 0:
+            warnings.append("Hole has no verified quantity and was excluded from cutting metrics.")
+            continue
+        quantity = int(quantity)
+        if hole.diameter_mm is None:
+            warnings.append("Hole has no verified diameter and was excluded from laser length.")
+        else:
+            perimeter_mm += math.pi * max(float(hole.diameter_mm), 0.0) * quantity
+        feature_count += quantity
+
+    for slot in geometry.slots:
+        quantity = slot.quantity_per_part
+        if quantity is None or quantity < 0:
+            warnings.append("Slot has no verified quantity and was excluded from cutting metrics.")
+            continue
+        quantity = int(quantity)
+        if slot.length_mm is None or slot.width_mm is None:
+            warnings.append("Slot has incomplete geometry and was excluded from laser length.")
+        else:
+            length = max(float(slot.length_mm), 0.0)
+            width = max(float(slot.width_mm), 0.0)
+            perimeter_mm += (2 * max(length - width, 0.0) + math.pi * width) * quantity
+        feature_count += quantity
+
+    for collection_name in ("notches", "cutouts"):
+        for item in getattr(geometry, collection_name):
+            quantity = item.quantity_per_part
+            if quantity is None or quantity < 0 or item.length_mm is None or item.width_mm is None:
+                warnings.append(f"{collection_name[:-1].title()} has incomplete geometry and was excluded from cutting metrics.")
+                continue
+            perimeter_mm += 2 * (max(float(item.length_mm), 0.0) + max(float(item.width_mm), 0.0)) * int(quantity)
+            feature_count += int(quantity)
+    return perimeter_mm, feature_count, warnings
+
+
+def _polygon_perimeter_mm(part) -> float | None:
+    contour = part.flat_pattern.outer_contour if part.flat_pattern else None
+    if contour is None or len(contour.points_mm) < 3:
+        return None
+    points = contour.points_mm
+    return sum(math.hypot(points[(i + 1) % len(points)].x - point.x, points[(i + 1) % len(points)].y - point.y) for i, point in enumerate(points))
+
+
+def _outer_profile_cut_length_mm(component_type: str, tube_type: str, length_mm: float, width_mm: float, outer_diameter_mm: float) -> float:
+    component = (component_type or "").lower()
+    if component in {"sheet", "plate"} and length_mm > 0 and width_mm > 0:
+        return 2 * (length_mm + width_mm)
+    if component in {"rod", "accessory"} and outer_diameter_mm > 0:
+        return math.pi * outer_diameter_mm
+    # Tube/profile stock cut paths depend on the selected machine and tooling;
+    # do not invent them from an orthographic envelope.
+    return 0.0
 
 
 def _is_round_profile_text(text: str) -> bool:
@@ -247,25 +312,37 @@ def calculate_structured_cost_breakdown(
     costed_parts: list[CostedPartBreakdown] = []
 
     for index, part in enumerate(extraction.per_part_breakdown, start=1):
+        profile_text = part.profile.shape if part.profile else "NA"
         dims = part.dimensions
         length = max(float(dims.length_mm or 0), 0.0)
-        width_or_dia = max(float(dims.width_or_outer_dia_mm or 0), 0.0)
-        secondary_width = dims.secondary_width_mm
+        width = max(float(dims.width_mm or 0), 0.0)
+        height = dims.height_mm
+        outer_diameter = max(float(dims.outer_diameter_mm or 0), 0.0)
+        width_or_dia = outer_diameter or width or max(float(height or 0), 0.0)
+        secondary_width = height
         if secondary_width is not None:
             secondary_width = max(float(secondary_width), 0.0)
-        thickness = max(float(dims.thickness_or_wall_thickness_mm or 0), 0.0)
+        thickness = max(float(dims.thickness_mm or 0), 0.0)
         qty = max(int(part.per_set_qty or 1), 1)
         item_material_type = normalize_material_type(part.material_type or material_type, part.material_code or extraction.raw_material_code)
         item_details = MATERIALS[item_material_type]
         density = float(item_details["density"])
         rate = default_rate if item_material_type == material_type else float(item_details["default_rate"])
 
-        surface_area, net_weight = _part_area_and_weight(part.component_type, part.tube_type, length, width_or_dia, secondary_width, thickness, density)
-        surface_formula, surface_values = _surface_area_step_text(part.component_type, part.tube_type, length, width_or_dia, secondary_width, thickness)
-        weight_formula, weight_values = _weight_step_text(part.component_type, part.tube_type, length, width_or_dia, secondary_width, thickness, density)
+        surface_area, net_weight = _part_area_and_weight(part.component_type, profile_text, length, width_or_dia, secondary_width, thickness, density)
+        surface_formula, surface_values = _surface_area_step_text(part.component_type, profile_text, length, width_or_dia, secondary_width, thickness)
+        weight_formula, weight_values = _weight_step_text(part.component_type, profile_text, length, width_or_dia, secondary_width, thickness, density)
         gross_weight, scrap_weight, stock_approach, stock = _stock_for_part(part.component_type, net_weight, length, width_or_dia, thickness, density, qty)
-        laser_length_mm = max(float(part.cutting_metrics.laser_cutting_length_mm or 0), 0.0)
-        press_hits = max(int(part.cutting_metrics.press_machine_hits_count or 0), 0)
+        outer_profile_length_mm = _polygon_perimeter_mm(part) or _outer_profile_cut_length_mm(
+            part.component_type,
+            profile_text,
+            length,
+            width,
+            outer_diameter,
+        )
+        feature_length_mm, feature_hits, feature_warnings = _geometry_cutting_metrics(part)
+        laser_length_mm = outer_profile_length_mm + feature_length_mm
+        press_hits = feature_hits
         bends = max(int(part.bends_per_part or 0), 0)
         laser_cutting_cost = (laser_length_mm / 1000) * laser_cutting_rate_per_meter
         machine_punching_cost = press_hits * press_machine_rate_per_hit
@@ -411,10 +488,21 @@ def calculate_structured_cost_breakdown(
 
         part_payload = part.model_dump()
         part_payload["part_number"] = part.part_number or str(index)
-        part_payload["nesting_layout_hint"] = part.nesting_layout_hint.model_copy(
-            update={
-                "nesting_strategy": part.nesting_layout_hint.nesting_strategy or stock_approach,
-            }
+        part_payload["material_type"] = item_material_type
+        part_payload["material_code"] = part.material_code or extraction.raw_material_code
+        part_payload["bends_per_part"] = bends
+        part_payload["cutting_metrics"] = {
+            "laser_cutting_length_mm": laser_length_mm,
+            "press_machine_hits_count": press_hits,
+            "outer_profile_cut_length_mm": outer_profile_length_mm,
+            "internal_feature_cut_length_mm": feature_length_mm,
+            "internal_feature_count": feature_hits,
+        }
+        part_payload["tube_type"] = profile_text
+        part_payload["notes"] = feature_warnings
+        part_payload["nesting_layout_hint"] = NestingLayoutHint(
+            nesting_strategy=stock_approach,
+            recommended_grain_or_cut_direction=(part.nesting_constraints.grain_direction if part.nesting_constraints else None) or "NA",
         )
         costed_parts.append(
             CostedPartBreakdown(
@@ -441,14 +529,25 @@ def calculate_structured_cost_breakdown(
             )
         )
 
-    welding_length = extraction.assembly_level_fabrication.total_assembly_welding_length_mm
+    welding_length = max(float(extraction.assembly_fabrication.welding_length_mm or 0), 0.0)
+    referenced_drawings = [
+        ReferencedDrawing(
+            drawing_number=part.referenced_drawing_number,
+            referenced_by_part_number=part.part_number,
+            referenced_by_component=part.component_name,
+        )
+        for part in extraction.per_part_breakdown
+        if part.referenced_drawing_number
+    ]
     welding_cost = (welding_length / 1000) * welding_labor_per_meter
     parts_laser = sum(part.calculated_costs.total_combined_set_cost_via_laser for part in costed_parts)
     parts_machine = sum(part.calculated_costs.total_combined_set_cost_via_machine for part in costed_parts)
     return StructuredCostBreakdown(
-        currency=extraction.currency or "INR",
-        part_name=extraction.part_name,
-        referenced_drawings=extraction.referenced_drawings,
+        currency="INR",
+        part_name=None,
+        raw_material_type=extraction.raw_material_type,
+        raw_material_code=extraction.raw_material_code,
+        referenced_drawings=referenced_drawings,
         per_part_breakdown=costed_parts,
         assembly_level_fabrication=AssemblyLevelFabrication(
             total_assembly_welding_length_mm=round(welding_length, 2),

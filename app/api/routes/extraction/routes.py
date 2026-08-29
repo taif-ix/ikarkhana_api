@@ -12,18 +12,12 @@ from app.core.config import (
     RATE_PER_PRESS_MACHINE_HIT,
     RATE_PER_SQ_METER_PAINT,
 )
-from app.models.schemas import ExtractedDimensions, ReferenceExtraction, StructuredCostBreakdown, StructuredExtraction
+from app.models.schemas import ReferenceExtraction, StructuredCostBreakdown, StructuredExtraction
 from app.services.estimator import calculate_structured_cost_breakdown
-from app.services.vision import extract_dimensions_with_gemini, extract_references_with_gemini, extract_structured_with_gemini
+from app.services.vision import extract_references_with_gemini, extract_structured_with_gemini
 
 
 router = APIRouter()
-
-
-@router.post("/extract-dimensions", response_model=ExtractedDimensions)
-async def extract_dimensions(diagram: UploadFile = File(...)) -> ExtractedDimensions:
-    content = await diagram.read()
-    return extract_dimensions_with_gemini(content, diagram.content_type)
 
 
 @router.post("/extract-references", response_model=ReferenceExtraction, response_model_exclude_none=True)

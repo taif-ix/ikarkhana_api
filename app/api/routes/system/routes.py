@@ -31,7 +31,6 @@ def api_root() -> dict[str, object]:
             "/batch-process/{job_id}",
             "/batch-process/{job_id}/retry",
             "/diagram-preview",
-            "/extract-dimensions",
             "/extract-references",
             "/batch-extract-references",
             "/extract-structured",
